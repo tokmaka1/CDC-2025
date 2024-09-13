@@ -102,7 +102,7 @@ def covariance(x):  # x has to be torch.tensor
 
 
 def neg_GP_UCB(x):
-    return -(mean(x) + beta*np.sqrt(covariance(x)))
+    return -(mean(x) + beta*np.sqrt(covariance(x))) # + 1e6*int(x in np.array(X_sample))
 
 
 def optimistic_safe_set(x):  # this is a constraint function
@@ -111,6 +111,11 @@ def optimistic_safe_set(x):  # this is a constraint function
 
 def pessimistic_safe_set(x):  # this is a constraint function
     pass
+
+
+def constraint(x):  # equality constraint
+    x_tensor = torch.tensor(x, dtype=torch.float32)
+    return int(x_tensor in X_sample)
 
 
 for i in range(50):
@@ -124,8 +129,10 @@ for i in range(50):
     # Implementation vs. theory; we will just use Q instead of C...
 
     # Let us do it without safety first; We can do GP-UCB, but we do a self-implementation
-    x0 = torch.tensor([0])  # torch.tensor([np.random.uniform(0, 1)])
-    x_next = torch.tensor(minimize(neg_GP_UCB, x0, method='L-BFGS-B', bounds=[(0, 1)]).x, dtype=torch.float32)
+    # x0 = torch.tensor([0])  # torch.tensor([np.random.uniform(0, 1)])
+    cons = ({'type': 'eq', 'fun': constraint})  # constraint
+    res = minimize(neg_GP_UCB, X_sample[-1], method='L-BFGS-B', bounds=[(0, 1)])
+    x_next = torch.tensor(res.x, dtype=torch.float32)
     y_new = torch.tensor(gt.f(x_next), dtype=torch.float32)  # let us do it noise-free
     X_sample = torch.cat((X_sample, x_next.unsqueeze(0)), dim=0)
     Y_sample = torch.cat((Y_sample, y_new), dim=0)
