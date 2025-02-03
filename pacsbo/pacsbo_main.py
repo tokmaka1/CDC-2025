@@ -18,7 +18,7 @@ import dill
 from matplotlib.patches import Ellipse
 import torch.multiprocessing as mp
 from scipy.special import comb
-from plot import plot_1D, plot_2D_contour, plot_1D_SafeOpt_with_sets, plot_gym, plot_gym_together
+# from plot import plot_1D, plot_2D_contour, plot_1D_SafeOpt_with_sets, plot_gym, plot_gym_together
 import gym
 import sys
 # sys.path.insert(1,  './vision-based-furuta-pendulum-master')
@@ -71,7 +71,9 @@ def predict(model, input1, input2):
 
 
 class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build "new"
-    def __init__(self, train_x, train_y, noise_std, n_devices=1, output_device=torch.device('cpu'), lengthscale=0.1):
+    def __init__(self, train_x, train_y, noise_std, lengthscale):
+        n_devices = 1
+        output_device = torch.device('cpu')
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         likelihood.noise = torch.tensor(noise_std**2)
         super(GPRegressionModel, self).__init__(train_x, train_y, likelihood)
@@ -129,22 +131,24 @@ def initial_safe_samples(gt, num_safe_points, X_plot, noise_std):
 
 
 class ground_truth():
-    def __init__(self, num_center_points, X_plot, RKHS_norm):
+    def __init__(self, num_center_points, dimension, RKHS_norm, lengthscale):
         def fun(kernel, alpha):
             return lambda X: kernel(X.reshape(-1, self.X_center.shape[1]), self.X_center).detach().numpy() @ alpha
         # For ground truth
-        self.X_plot = X_plot
+        # self.X_plot = X_plot
         self.RKHS_norm = RKHS_norm
-        random_indices_center = torch.randint(high=self.X_plot.shape[0], size=(num_center_points,))
-        self.X_center = self.X_plot[random_indices_center]
+        # random_indices_center = torch.randint(high=self.X_plot.shape[0], size=(num_center_points,))
+        # self.X_center = self.X_plot[random_indices_center]  # problem can be here!
+        self.X_center = torch.rand(num_center_points, dimension)
         alpha = np.random.uniform(-1, 1, size=self.X_center.shape[0])
         self.kernel = gpytorch.kernels.MaternKernel(nu=3/2)
-        self.kernel.lengthscale = 0.1
+        self.kernel.lengthscale = lengthscale
         RKHS_norm_squared = alpha.T @ self.kernel(self.X_center, self.X_center).detach().numpy() @ alpha
         alpha /= np.sqrt(RKHS_norm_squared)/RKHS_norm  # scale to RKHS norm
+        self.alpha= alpha
         self.f = fun(self.kernel, alpha)
-        self.fX = torch.tensor(self.f(self.X_plot), dtype=torch.float32)
-        self.safety_threshold = np.quantile(self.fX, 0.3)  # np.quantile(self.fX, np.random.uniform(low=0.15, high=0.5))
+        self.fX = torch.tensor(self.f(self.X_center), dtype=torch.float32)
+        # self.safety_threshold = np.quantile(self.fX, 0.3)  # np.quantile(self.fX, np.random.uniform(low=0.15, high=0.5))
 
     def conduct_experiment(self, x, noise_std):
         return torch.tensor(self.f(x) + np.random.normal(loc=0, scale=noise_std, size=1), dtype=x.dtype)
@@ -179,7 +183,7 @@ class ground_truth():
 
 class PACSBO():
     def __init__(self, delta_confidence, delta_cube, noise_std, tuple_ik, X_plot, X_sample,
-                Y_sample, safety_threshold, exploration_threshold, gt, compute_local_X_plot, compute_all_sets=False):
+                Y_sample, safety_threshold, exploration_threshold, gt, compute_local_X_plot, lengthscale, compute_all_sets=False):
         def compute_X_plot_locally(n_dimensions, points_per_axis, lb, ub):
             X_plot = []
             for i in range(n_dimensions):
@@ -188,6 +192,7 @@ class PACSBO():
             X_plot = torch.cartesian_prod(*X_plot).reshape(-1, n_dimensions)
             return X_plot
         self.compute_all_sets = compute_all_sets
+        self.lengthscale = lengthscale
         self.gt = gt  # at least for toy experiments it works like this.
         self.exploration_threshold = exploration_threshold
         self.delta_confidence = delta_confidence
@@ -219,18 +224,9 @@ class PACSBO():
             self.y_sample = Y_sample
             self.discr_domain = X_plot
 
-    def compute_model(self, dict_reuse_GPs, gpr):
-        if convert_to_hashable(self.x_sample) in dict_reuse_GPs.keys():  # use some rounding to accuracy of discretized domain
-            self.model, self.K = dict_reuse_GPs[convert_to_hashable(self.x_sample)]
-        else:
-            if Furuta:
-                self.model = gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=0.2)
-            else: 
-                self.model = gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=0.1)
-            self.K = self.model(self.x_sample).covariance_matrix
-            # model.train()
-            dict_reuse_GPs[convert_to_hashable(self.x_sample)] = [self.model, self.K]
-        # return model
+    def compute_model(self, gpr):
+        self.model = gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=self.lengthscale)
+        self.K = self.model(self.x_sample).covariance_matrix
 
     def compute_mean_var(self):
         self.model.eval()
