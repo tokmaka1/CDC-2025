@@ -49,28 +49,37 @@ if __name__ == '__main__':
     delta_confidence = 0.9
     exploration_threshold = 0
     dimension = num_agents
+    communication = True
     gt = ground_truth(num_center_points=750, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)
     safety_threshold = torch.quantile(gt.fX, 0.1).item()  # -np.infty  # based on X_center
-    X_plot = compute_X_plot(n_dimensions=1, points_per_axis=1000)
+    '''
+    We have nearest neighbor communication, the easiest way possible.
+    In a 3-agent setting, the undirected graph looks like: 1 - 2 - 3
+    We are not in the setting where we want to see the time-series with A0 actions being constant.
+    '''
     # Finding initial safe sample
-
     while True:
         X_sample_full = torch.rand(dimension).unsqueeze(0)  # just start here
         Y_sample = torch.tensor(gt.f(X_sample_full), dtype=torch.float32)
         if Y_sample > safety_threshold:
             break
 
+    for j in range(num_agents):  # set-up agents
+        n_dimensions = 2 if j==0 or num_agents-1 else 3
+        # X_plot needs to be determined for every agent given their position in graph
+        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1000/n_dimensions))
+        agents[j] = [X_plot, None, None]
+        # which indices are relevant for this agent? for agent 0 it is 0 and 1, for agent 1 it is 0,1,2 etc; see graph
+        communication_indices = [j, j + 1] if j == 0 else [j - 1, j, j + 1] if 0 < j < num_agents - 1 else [num_agents - 2, num_agents - 1]
+        # We can also just put our action always on index 1 but it makes most sense as is. Index 0 for j=0, index 1 for the rest.
+
     for i in tqdm(range(iterations)):
         for j in range(num_agents):  # this is parallelizable
-            if j == 0:
-                # Agent 0
-                x_new = X_sample_full[0, 0].unsqueeze(0)
-                agents[j] = [x_new, None]
-            else:
-                X_sample = X_sample_full[:, j]  # .unsqueeze(0)
-                x_new, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, lengthscale=lengthscale_agent, safety_threshold=safety_threshold)
-                agents[j] = [x_new, cube]
-        if i != iterations - 1:  # last iteration; do not add the new point; we just want the updated model; also not the first agent
+            X_plot = agents[j][0]
+            X_sample = X_sample_full[:, j+1]
+            x_new, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, lengthscale=lengthscale_agent, safety_threshold=safety_threshold)
+            agents[j] = [X_plot, x_new, cube]
+        if i != iterations - 1:  # last iteration; do not add the new point; we just want the updated model
             x_new_full = torch.cat([agents[j][0] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new
             y_new = torch.tensor(gt.f(x_new_full), dtype=torch.float32)
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
