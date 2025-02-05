@@ -184,13 +184,6 @@ class ground_truth():
 class PACSBO():
     def __init__(self, delta_confidence, delta_cube, noise_std, tuple_ik, X_plot, X_sample,
                 Y_sample, safety_threshold, exploration_threshold, gt, compute_local_X_plot, lengthscale, compute_all_sets=False):
-        def compute_X_plot_locally(n_dimensions, points_per_axis, lb, ub):
-            X_plot = []
-            for i in range(n_dimensions):
-                X_plot_per_domain = torch.linspace(lb[i], ub[i], points_per_axis)
-                X_plot.append(X_plot_per_domain)
-            X_plot = torch.cartesian_prod(*X_plot).reshape(-1, n_dimensions)
-            return X_plot
         self.compute_all_sets = compute_all_sets
         self.lengthscale = lengthscale
         self.gt = gt  # at least for toy experiments it works like this.
@@ -203,26 +196,9 @@ class PACSBO():
         self.safety_threshold = safety_threshold
         self.tuple = tuple_ik
         self.lambda_bar = max(self.noise_std, 1)
-        (i, k) = tuple_ik
-        if (i, k) != (-1, -1):  # "key" for the global domain
-            self.lb = X_sample[i]-delta_cube*(k+1)  # this can be multi-dimensional
-            self.ub = X_sample[i]+delta_cube*(k+1)
-            self.lb[self.lb < 0] = 0
-            self.ub[self.ub > 1] = 1  # clipping
-            sample_indices = torch.all(torch.logical_and(X_sample >= self.lb, X_sample <= self.ub), axis=1)  # good command. axis=1 operates on the rows. If all elements in one row are true, it returns True
-            self.x_sample = X_sample[sample_indices].clone().detach()
-            self.y_sample = Y_sample[sample_indices].clone().detach()
-            if not compute_local_X_plot:
-                self.discr_domain = X_plot[torch.all(torch.logical_and(self.X_plot >= self.lb, self.X_plot <= self.ub), axis=1)]  # good command
-            else:
-                self.discr_domain = compute_X_plot_locally(n_dimensions=self.X_plot.shape[1], points_per_axis=int(np.round(self.X_plot.shape[0]**(1/self.X_plot.shape[1]))),
-                                                           lb=self.lb, ub=self.ub)
-        else:
-            self.lb = torch.tensor([0]*X_plot.shape[1])
-            self.ub = torch.tensor([1]*X_plot.shape[1])
-            self.x_sample = X_sample
-            self.y_sample = Y_sample
-            self.discr_domain = X_plot
+        self.x_sample = X_sample.clone().detach()
+        self.y_sample = Y_sample.clone().detach()
+        self.discr_domain = self.X_plot
 
     def compute_model(self, gpr):
         self.model = gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=self.lengthscale)
@@ -246,57 +222,13 @@ class PACSBO():
         return dict_local_RKHS_norms
 
     def compute_confidence_intervals_evaluation(self, RNN_model=None, m_PAC=None, alpha_bar=None, PAC=False, RKHS_norm_guessed=None):  # PAC is a boolean that decides whether we are in the outer loop or inner loop
-        if RKHS_norm_guessed is None:
-            self.B = predict(RNN_model, self.RKHS_norm_mean_function_list, self.vi_frac_list)
-            if PAC:
-                list_random_RKHS_norms = []
-                current_time = time.time()
-                # list_random_RKHS_functions = []
-                counter = 0
-                N_hat = int(max(torch.round((torch.max(self.ub-self.lb))*500), len(self.y_sample) + 10))
-                print(f'We have N_hat={N_hat} for cube {self.tuple}. Getting PAC bounds now.')
-                x_interpol = self.x_sample
-                y_interpol = self.y_sample
-                for _ in tqdm(range(m_PAC)):
-                    X_c = (torch.min(self.discr_domain) - torch.max(self.discr_domain))*torch.rand(N_hat, self.x_sample.shape[1]) + torch.max((self.discr_domain))
-                    X_c_tail = X_c[x_interpol.shape[0]:]
-                    X_c[:self.x_sample.shape[0]] = x_interpol  # this will be hard with local X_plot
-                    alpha_tail = -2*alpha_bar*torch.rand(N_hat-len(y_interpol), 1) + alpha_bar
-                    y_tail = self.model.kernel(x_interpol, X_c_tail).evaluate() @ alpha_tail
-                    y_head = (y_interpol - torch.squeeze(y_tail)).reshape(-1, 1)
-                    # matrix inversion with nugget factor
-                    alpha_head = torch.inverse(self.model.kernel(x_interpol, x_interpol).evaluate()+torch.eye(len(y_interpol))*1e-3) @ y_head
-                    alpha = torch.cat((alpha_head, alpha_tail))
-                    # if counter < 30:
-                    #     random_RKHS_function = self.model.kernel(self.discr_domain, X_c).evaluate() @ alpha
-                    #     list_random_RKHS_functions.append(random_RKHS_function)
-                    # elif len(self.y_sample) > 3:
-                    #     print(123)
-                    #     plt.figure()
-                    #     for random_RKHS_function in list_random_RKHS_functions:
-                    #         plt.plot(self.discr_domain, random_RKHS_function.detach().numpy(), alpha=0.1, color='blue')
-                    #     plt.scatter(self.x_sample, self.y_sample, color='black', s=100, label='Samples')
-
-                    random_RKHS_norm = torch.sqrt(alpha.T @ self.model.kernel(X_c, X_c).evaluate() @ alpha)
-                    list_random_RKHS_norms.append(random_RKHS_norm)
-                numpy_list = [tensor.item() for tensor in list_random_RKHS_norms]
-                numpy_list.sort()
-                r_final = 0
-                for r in range(m_PAC):  # you can compute this a priori
-                    summ = 0
-                    for i in range(r):
-                        summ += comb(m_PAC, i)*gamma_PAC**(i)*(1-gamma_PAC)**(m_PAC-i)
-                    if summ > kappa_PAC or self.B > numpy_list[-1-r]:  # TODO: check whether correct direction.
-                        break
-                    else:
-                        r_final = r
-                self.B = max(self.B, numpy_list[-1-r_final])
-                # print(f'The scenario approach took {time.time() - current_time} seconds.')
-        elif RKHS_norm_guessed is not None:
-            self.B = RKHS_norm_guessed
+        self.B = RKHS_norm_guessed
         self.compute_beta()
         self.lcb = self.mean - self.beta*torch.sqrt(self.var)  # we have to use standard deviation instead of variance
         self.ucb = self.mean + self.beta*torch.sqrt(self.var)
+        if -np.inf in self.lcb:
+            breakpoint()
+        
 
     def compute_safe_set(self):
         self.S = self.lcb > self.safety_threshold  # version without "Lipschitz constant"; as programmed in classical SafeOpt
@@ -358,6 +290,8 @@ class PACSBO():
         # self.beta = self.B + torch.sqrt(2*self.noise_std*torch.log(inside_log))
         inside_log = torch.det(torch.eye(self.x_sample.shape[0]) + (1/self.noise_std*self.K))
         inside_sqrt = self.noise_std*torch.log(inside_log) - (2*self.noise_std*torch.log(torch.tensor(self.delta_confidence)))
+        if inside_sqrt == np.inf:
+            breakpoint()
         self.beta = self.B + torch.sqrt(inside_sqrt)
 
     def compute_RKHS_norm_true(self):

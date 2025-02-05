@@ -18,7 +18,7 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
         cube.maximizer_routine(best_lower_bound_others=-np.infty)
         cube.expander_routine()
     def update_model(cube):
-        cube.compute_model(gpr=GPRegressionModel)
+        cube.compute_model(gpr=GPRegressionModel)  # compute confidence intervals?
         cube.compute_mean_var()
         cube.compute_confidence_intervals_evaluation(RKHS_norm_guessed=B)
 
@@ -39,24 +39,27 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
 
 if __name__ == '__main__':
     # Generate ground truth
-    iterations = 50
-    num_agents = 10
+    iterations = 75
+    num_agents = 3
     agents = {}
     lengthscale_agent = 0.1
     lengthscale_gt = num_agents/10
-    noise_std = 1e-2
+    noise_std = 1e-1  # increase a little for numerical stability
     RKHS_norm = 1
     delta_confidence = 0.9
     exploration_threshold = 0
     dimension = num_agents
-    gt = ground_truth(num_center_points=750, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)  # cannot pickle this object
-    X_plot = compute_X_plot(n_dimensions=1, points_per_axis=1000)  # 1D for every agent!
+    gt = ground_truth(num_center_points=750, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)
     safety_threshold = torch.quantile(gt.fX, 0.1).item()  # -np.infty  # based on X_center
+    X_plot = compute_X_plot(n_dimensions=1, points_per_axis=1000)
+    # Finding initial safe sample
+
     while True:
         X_sample_full = torch.rand(dimension).unsqueeze(0)  # just start here
         Y_sample = torch.tensor(gt.f(X_sample_full), dtype=torch.float32)
         if Y_sample > safety_threshold:
             break
+
     for i in tqdm(range(iterations)):
         for j in range(num_agents):  # this is parallelizable
             if j == 0:
@@ -85,7 +88,7 @@ if __name__ == '__main__':
         plt.xlabel('Action')
         plt.ylabel('Reward')
         plt.title(f'Agent {j}')
-        plt.savefig(f'../{num_agents}_agents_agent_{j}_safety.png')
+        # plt.savefig(f'../{num_agents}_agents_agent_{j}_safety.png')
 
     # Now plot Agent 0 (the one with constant)
     plt.figure()
@@ -93,4 +96,4 @@ if __name__ == '__main__':
     plt.title(f'Agent 0: Time series POV; {num_agents} total agents, safety threshold={round(safety_threshold,2)}')
     plt.xlabel('Iteration')
     plt.ylabel('Global reward')
-    plt.savefig(f'../{num_agents}_agents_agent_0_safety.png')
+    # plt.savefig(f'../{num_agents}_agents_agent_0_safety.png')
