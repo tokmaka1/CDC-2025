@@ -39,8 +39,8 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
 
 if __name__ == '__main__':
     # Generate ground truth
-    iterations = 75
-    num_agents = 3
+    iterations = 30
+    num_agents = 4
     agents = {}
     lengthscale_agent = 0.1
     lengthscale_gt = num_agents/10
@@ -49,9 +49,8 @@ if __name__ == '__main__':
     delta_confidence = 0.9
     exploration_threshold = 0
     dimension = num_agents
-    communication = True
     gt = ground_truth(num_center_points=750, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)
-    safety_threshold = torch.quantile(gt.fX, 0.1).item()  # -np.infty  # based on X_center
+    safety_threshold = -np.infty  # torch.quantile(gt.fX, 0.1).item()  # -np.infty  # based on X_center
     '''
     We have nearest neighbor communication, the easiest way possible.
     In a 3-agent setting, the undirected graph looks like: 1 - 2 - 3
@@ -65,29 +64,31 @@ if __name__ == '__main__':
             break
 
     for j in range(num_agents):  # set-up agents
-        n_dimensions = 2 if j==0 or num_agents-1 else 3
+        n_dimensions = 2 if j==0 or j==num_agents-1 else 3
         # X_plot needs to be determined for every agent given their position in graph
-        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1000/n_dimensions))
-        agents[j] = [X_plot, None, None]
+        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e5**(1/n_dimensions)))
         # which indices are relevant for this agent? for agent 0 it is 0 and 1, for agent 1 it is 0,1,2 etc; see graph
-        communication_indices = [j, j + 1] if j == 0 else [j - 1, j, j + 1] if 0 < j < num_agents - 1 else [num_agents - 2, num_agents - 1]
+        communication_indices_list = [j, j + 1] if j == 0 else [j - 1, j, j + 1] if 0 < j < num_agents - 1 else [num_agents - 2, num_agents - 1]
+        agents[j] = [X_plot, communication_indices_list, None, None, None]
         # We can also just put our action always on index 1 but it makes most sense as is. Index 0 for j=0, index 1 for the rest.
 
     for i in tqdm(range(iterations)):
         for j in range(num_agents):  # this is parallelizable
             X_plot = agents[j][0]
-            X_sample = X_sample_full[:, j+1]
-            x_new, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, lengthscale=lengthscale_agent, safety_threshold=safety_threshold)
-            agents[j] = [X_plot, x_new, cube]
+            communication_indices = agents[j][1]
+            X_sample = X_sample_full[:, communication_indices]
+            x_new_neighbors, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, lengthscale=lengthscale_agent, safety_threshold=safety_threshold)
+            x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)
+            agents[j] = [X_plot, communication_indices, x_new, x_new_neighbors, cube]  # this contains the multi-dimensional x_new_neighbors and the single one x_new
         if i != iterations - 1:  # last iteration; do not add the new point; we just want the updated model
-            x_new_full = torch.cat([agents[j][0] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new
-            y_new = torch.tensor(gt.f(x_new_full), dtype=torch.float32)
+            x_new_full = torch.cat([agents[j][2] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new ("1D ones")
+            y_new = torch.tensor(gt.f(x_new_full), dtype=torch.float32)  # this is the applied action!
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
     print('Hello')
 
     for j in range(1, num_agents):  # not the first because we keep this constant
-        cube = agents[j][1]
+        cube = agents[j][-1]
         plt.figure()
         plt.plot(np.asarray(X_sample_full[:, j]), np.asarray(Y_sample), 'ob', markersize=10)
         # plt.plot(X_plot, gt.f(X_plot), '-b')
