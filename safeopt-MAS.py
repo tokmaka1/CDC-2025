@@ -28,18 +28,25 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
                     compute_local_X_plot=False, compute_all_sets=False, lengthscale=lengthscale)  # all samples that we currently have
     update_model(cube)
     compute_sets(cube)
-
-    if sum(torch.logical_or(cube.M, cube.G)) != 0:
-        x_new = cube.discr_domain[torch.logical_or(cube.M, cube.G)][torch.argmax(cube.var[torch.logical_or(cube.M, cube.G)])]
+    if cube.safety_threshold > -np.infty:
+        if sum(torch.logical_or(cube.M, cube.G)) != 0:
+                x_new = cube.discr_domain[torch.logical_or(cube.M, cube.G)][torch.argmax(cube.var[torch.logical_or(cube.M, cube.G)])]
+        else:
+            warnings.warn('No new input found. Returning last point of X_sample')
+            x_new = X_sample[-1].unsqueeze(0)
     else:
-        warnings.warn('No new input found. Returning last point of X_sample')
-        x_new = X_sample[-1].unsqueeze(0)
+        if sum(cube.M) != 0:
+                x_new = cube.discr_domain[cube.M][torch.argmax(cube.var[cube.M])]
+        else:
+            warnings.warn('No new input found. Returning last point of X_sample')
+            x_new = X_sample[-1].unsqueeze(0)
+
     return x_new, cube
 
 
 if __name__ == '__main__':
     # Generate ground truth
-    iterations = 30
+    iterations = 25
     num_agents = 4
     agents = {}
     lengthscale_agent = 0.1
@@ -49,8 +56,9 @@ if __name__ == '__main__':
     delta_confidence = 0.9
     exploration_threshold = 0
     dimension = num_agents
-    gt = ground_truth(num_center_points=750, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)
+    gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)
     safety_threshold = -np.infty  # torch.quantile(gt.fX, 0.1).item()  # -np.infty  # based on X_center
+    print(f'The heuristic maximum of the function is {max(gt.fX)} and located at {gt.X_center[torch.argmax(gt.fX)]}.')
     '''
     We have nearest neighbor communication, the easiest way possible.
     In a 3-agent setting, the undirected graph looks like: 1 - 2 - 3
@@ -75,13 +83,26 @@ if __name__ == '__main__':
     for i in tqdm(range(iterations)):
         for j in range(num_agents):  # this is parallelizable
             X_plot = agents[j][0]
-            communication_indices = agents[j][1]
-            X_sample = X_sample_full[:, communication_indices]
+            communication_indices_list = agents[j][1]
+            X_sample = X_sample_full[:, communication_indices_list]
             x_new_neighbors, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, lengthscale=lengthscale_agent, safety_threshold=safety_threshold)
-            x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)
-            agents[j] = [X_plot, communication_indices, x_new, x_new_neighbors, cube]  # this contains the multi-dimensional x_new_neighbors and the single one x_new
+            x_new = None  # x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)
+            agents[j] = [X_plot, communication_indices_list, x_new, x_new_neighbors, cube]  # this contains the multi-dimensional x_new_neighbors and the single one x_new
+
+        # Consensus in policy prediction; soon in loop
+        x_new_list_0 = [agents[0][-2][0], agents[1][-2][0]]
+        agents[0][2] = torch.mean(torch.tensor(x_new_list_0)).unsqueeze(0)
+        x_new_list_1 = [agents[0][-2][1], agents[1][-2][1], agents[2][-2][0]]
+        agents[1][2] = torch.mean(torch.tensor(x_new_list_1)).unsqueeze(0)
+        x_new_list_2 = [agents[1][-2][2], agents[2][-2][1], agents[3][-2][0]]
+        agents[2][2] = torch.mean(torch.tensor(x_new_list_2)).unsqueeze(0)
+        x_new_list_3 = [agents[2][-2][2], agents[3][-2][1]]
+        agents[3][2] = torch.mean(torch.tensor(x_new_list_3)).unsqueeze(0)
+
         if i != iterations - 1:  # last iteration; do not add the new point; we just want the updated model
             x_new_full = torch.cat([agents[j][2] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new ("1D ones")
+            if torch.any(torch.all(X_sample_full == x_new_full, dim=1)):
+                raise Exception('Same same same')
             y_new = torch.tensor(gt.f(x_new_full), dtype=torch.float32)  # this is the applied action!
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
