@@ -21,6 +21,7 @@ from scipy.special import comb
 # from plot import plot_1D, plot_2D_contour, plot_1D_SafeOpt_with_sets, plot_gym, plot_gym_together
 import gym
 import sys
+from custom_kernels import RadialTemporalKernel
 # sys.path.insert(1,  './vision-based-furuta-pendulum-master')
 # from gym_brt.envs import QubeBalanceEnv, QubeSwingupEnv
 # from gym_brt.control.control import QubeHoldControl, QubeFlipUpControl
@@ -71,17 +72,36 @@ def predict(model, input1, input2):
 
 
 class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build "new"
-    def __init__(self, train_x, train_y, noise_std, lengthscale):
+    def __init__(self, data_x, train_y, iteration, noise_std, lengthscale_spatio, lengthscale_temporal):
+        # gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=self.lengthscale)
         n_devices = 1
         output_device = torch.device('cpu')
         likelihood = gpytorch.likelihoods.GaussianLikelihood()
         likelihood.noise = torch.tensor(noise_std**2)
-        super(GPRegressionModel, self).__init__(train_x, train_y, likelihood)
+        # train_x = torch.cat((data_x, iteration), dim=1)  # including the time here
+        train_x = data_x
+        super(GPRegressionModel, self).__init__(train_x, train_y, likelihood)  # also put iteration here!
         self.mean_module = gpytorch.means.ConstantMean()
-        self.kernel = gpytorch.kernels.MaternKernel(nu=2.5)
-        # self.kernel = gpytorch.kernels.rbf_kernel.RBFKernel()
-        self.kernel.lengthscale = lengthscale
-        # self.base_kernel.lengthscale.requires_grad = False; somehow does not work
+        self.kernel_spatio = gpytorch.kernels.MaternKernel(nu=2.5, active_dims=range(train_x.shape[1]-1))
+        # self.kernel_temporal = gpytorch.kernels.rbf_kernel.RBFKernel(active_dims=[train_x.shape[1]-1])
+        # self.kernel_temporal = gpytorch.kernels.MaternKernel(nu=1.5)  # corresponding to Ohrnstein-Uhlenbeck process   
+        self.kernel_temporal = RadialTemporalKernel(active_dims=[train_x.shape[1]-1])
+        self.kernel_spatio.lengthscale = lengthscale_spatio
+        # self.kernel_temporal.lengthscale = lengthscale_temporal
+        # if iteration.item() <= 10:
+        #     self.kernel_temporal.lengthscale = 100
+        # elif iteration.item() <= 15:
+        #     self.kernel_temporal.lengthscale = 50
+        # elif iteration.item() <= 20:
+        #     self.kernel_temporal.lengthscale = 10
+        # elif iteration.item() <= 25:
+        #     self.kernel_temporal.lengthscale = 50
+        # elif iteration.item() > 26:
+        #     self.kernel_temporal.lengthscale = 100
+
+        # Create product kernel
+        self.kernel = gpytorch.kernels.ProductKernel(self.kernel_spatio, self.kernel_temporal)
+
         if output_device.type != 'cpu':
             self.covar_module = gpytorch.kernels.MultiDeviceKernel(
                 self.kernel, device_ids=range(n_devices), output_device=output_device)
@@ -135,10 +155,7 @@ class ground_truth():
         def fun(kernel, alpha):
             return lambda X: kernel(X.reshape(-1, self.X_center.shape[1]), self.X_center).detach().numpy() @ alpha
         # For ground truth
-        # self.X_plot = X_plot
         self.RKHS_norm = RKHS_norm
-        # random_indices_center = torch.randint(high=self.X_plot.shape[0], size=(num_center_points,))
-        # self.X_center = self.X_plot[random_indices_center]  # problem can be here!
         self.X_center = torch.rand(num_center_points, dimension)
         alpha = np.random.uniform(-1, 1, size=self.X_center.shape[0])
         self.kernel = gpytorch.kernels.MaternKernel(nu=3/2)
@@ -182,10 +199,11 @@ class ground_truth():
 
 
 class PACSBO():
-    def __init__(self, delta_confidence, delta_cube, noise_std, tuple_ik, X_plot, X_sample,
-                Y_sample, safety_threshold, exploration_threshold, gt, compute_local_X_plot, lengthscale, compute_all_sets=False):
+    def __init__(self, delta_confidence, noise_std, tuple_ik, X_plot, X_sample,
+                Y_sample, iteration, safety_threshold, exploration_threshold, gt, lengthscale_spatio, lengthscale_temporal, compute_all_sets=False):
         self.compute_all_sets = compute_all_sets
-        self.lengthscale = lengthscale
+        self.lengthscale_spatio = lengthscale_spatio
+        self.lengthscale_temporal = lengthscale_temporal
         self.gt = gt  # at least for toy experiments it works like this.
         self.exploration_threshold = exploration_threshold
         self.delta_confidence = delta_confidence
@@ -196,18 +214,26 @@ class PACSBO():
         self.safety_threshold = safety_threshold
         self.tuple = tuple_ik
         self.lambda_bar = max(self.noise_std, 1)
-        self.x_sample = X_sample.clone().detach()
+        self.x = X_sample.clone().detach()
+        self.iteration = torch.tensor(iteration).view(1, 1)  # this needs directly a different kernel
+        self.iteration_x = torch.arange(1, self.x.shape[0] + 1).unsqueeze(1)
+        # But we can still concatenate
+        self.x_sample = torch.cat((self.x, self.iteration_x), dim=1)
         self.y_sample = Y_sample.clone().detach()
-        self.discr_domain = self.X_plot
+        self.iteration_discr_domain = (self.iteration + 1).expand(self.X_plot.shape[0], -1)  # add ome because this is the only thing we are interested in. One-step prediction
+        self.discr_domain = torch.cat([self.X_plot, self.iteration_discr_domain], dim=1)  # Concatenates along columns
+
 
     def compute_model(self, gpr):
-        self.model = gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=self.lengthscale)
+        self.model = gpr(data_x=self.x_sample, train_y=self.y_sample, iteration=self.iteration,
+                          noise_std=self.noise_std, lengthscale_spatio=self.lengthscale_spatio, lengthscale_temporal=self.lengthscale_temporal)
         self.K = self.model(self.x_sample).covariance_matrix
 
     def compute_mean_var(self):
         self.model.eval()
         self.f_preds = self.model(self.discr_domain)  # the X value will also be somehow hidden inside this f_preds
         self.mean = self.f_preds.mean
+        # print(max(abs(self.mean)))
         self.var = self.f_preds.variance
 
     def compute_confidence_intervals_training(self, dict_local_RKHS_norms={}):

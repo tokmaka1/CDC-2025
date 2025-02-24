@@ -5,14 +5,28 @@ import torch
 import warnings
 import numpy as np
 from tqdm import tqdm
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+from scipy.spatial import ConvexHull
 
 # Add the relative path to the system path
-sys.path.append(os.path.abspath("./pacsbo"))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
+
+# Print to verify
+print("Changed working directory to:", os.getcwd())
+
+
+from safebo_MAS_plot import plot_2D_mean, plot_2D_UCB, plot_reward, plot_3D_sampled_space, plot_1D_sampled_space
 from pacsbo.pacsbo_main import compute_X_plot, ground_truth, initial_safe_samples, PACSBO, GPRegressionModel
-import matplotlib.pyplot as plt
 
 
-def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, X_plot, X_sample, Y_sample, lengthscale, safety_threshold):
+
+
+# sys.path.append(os.path.abspath("./pacsbo"))
+
+
+def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, X_plot, X_sample, Y_sample, t, lengthscale_spatio, lengthscale_temporal, safety_threshold):
     def compute_sets(cube):
         cube.compute_safe_set()
         cube.maximizer_routine(best_lower_bound_others=-np.infty)
@@ -23,33 +37,44 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
         cube.compute_confidence_intervals_evaluation(RKHS_norm_guessed=B)
 
 
-    cube = PACSBO(delta_confidence=delta_confidence, delta_cube=1, noise_std=noise_std, tuple_ik=(-1, -1), X_plot=X_plot, X_sample=X_sample,
-                    Y_sample=Y_sample, safety_threshold=safety_threshold, exploration_threshold=exploration_threshold, gt=gt,
-                    compute_local_X_plot=False, compute_all_sets=False, lengthscale=lengthscale)  # all samples that we currently have
+    cube = PACSBO(delta_confidence=delta_confidence, noise_std=noise_std, tuple_ik=(-1, -1), X_plot=X_plot, X_sample=X_sample,
+                    Y_sample=Y_sample, iteration=t, safety_threshold=safety_threshold, exploration_threshold=exploration_threshold, 
+                    gt=gt, compute_all_sets=False, lengthscale_spatio=lengthscale_spatio, lengthscale_temporal=lengthscale_temporal)  # all samples that we currently have
+    # Building a new object in every iteration
     update_model(cube)
     compute_sets(cube)
+
     if cube.safety_threshold > -np.infty:
+        # warnings.warn('Implement random maximizer of uncertainty!')
         if sum(torch.logical_or(cube.M, cube.G)) != 0:
-                x_new = cube.discr_domain[torch.logical_or(cube.M, cube.G)][torch.argmax(cube.var[torch.logical_or(cube.M, cube.G)])]
+                max_indices = torch.nonzero(cube.ucb[torch.logical_or(cube.M, cube.G)] == torch.max(cube.ucb[torch.logical_or(cube.M, cube.G)]), as_tuple=True)[0]
+                random_max_index = max_indices[torch.randint(len(max_indices), (1,))].item()
+                x_new = cube.discr_domain[random_max_index, :]
         else:
             warnings.warn('No new input found. Returning last point of X_sample')
-            x_new = X_sample[-1].unsqueeze(0)
+            x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))  # .unsqueeze(0)
     else:
         if sum(cube.M) != 0:
-                x_new = cube.discr_domain[cube.M][torch.argmax(cube.var[cube.M])]
+            # max_indices = torch.nonzero(cube.var[cube.M] == torch.max(cube.var[cube.M]), as_tuple=True)[0]
+            max_indices = torch.nonzero(cube.ucb == torch.max(cube.ucb), as_tuple=True)[0]
+            random_max_index = max_indices[torch.randint(len(max_indices), (1,))].item()
+            x_new = cube.discr_domain[random_max_index, :]
         else:
             warnings.warn('No new input found. Returning last point of X_sample')
-            x_new = X_sample[-1].unsqueeze(0)
+            x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))
 
     return x_new, cube
 
 
 if __name__ == '__main__':
     # Generate ground truth
-    iterations = 25
+    iterations = 50
     num_agents = 4
+    random_expert = False
+    sequential_expert = True
     agents = {}
-    lengthscale_agent = 0.1
+    lengthscale_agent_spatio = 0.5  # 0.1
+    lengthscale_agent_temporal = 1e6  # this will be over-written
     lengthscale_gt = num_agents/10
     noise_std = 1e-1  # increase a little for numerical stability
     RKHS_norm = 1
@@ -57,8 +82,20 @@ if __name__ == '__main__':
     exploration_threshold = 0
     dimension = num_agents
     gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)
-    safety_threshold = -np.infty  # torch.quantile(gt.fX, 0.1).item()  # -np.infty  # based on X_center
+    safety_threshold = torch.quantile(gt.fX, 0.1).item()
     print(f'The heuristic maximum of the function is {max(gt.fX)} and located at {gt.X_center[torch.argmax(gt.fX)]}.')
+    print(f'The safety threshold is {safety_threshold}.')
+
+    '''
+    Radial temporal kernel
+    plt.figure()
+    plt.plot(X,Y)
+    plt.xlabel('$\|t-t^\prime\|_2$')
+    plt.ylabel('$k(t,t^\prime)=k(\|t-t^\prime\|_2$')
+    plt.title('Radial temporal kernel')
+    plt.savefig('radial_temporal_kernel.png')
+    '''
+
     '''
     We have nearest neighbor communication, the easiest way possible.
     In a 3-agent setting, the undirected graph looks like: 1 - 2 - 3
@@ -80,34 +117,63 @@ if __name__ == '__main__':
         agents[j] = [X_plot, communication_indices_list, None, None, None]
         # We can also just put our action always on index 1 but it makes most sense as is. Index 0 for j=0, index 1 for the rest.
 
-    for i in tqdm(range(iterations)):
+    for t in tqdm(range(1, iterations)):
         for j in range(num_agents):  # this is parallelizable
             X_plot = agents[j][0]
             communication_indices_list = agents[j][1]
             X_sample = X_sample_full[:, communication_indices_list]
-            x_new_neighbors, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, lengthscale=lengthscale_agent, safety_threshold=safety_threshold)
-            x_new = None  # x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)
+            x_new_neighbors, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, t, lengthscale_spatio=lengthscale_agent_spatio, lengthscale_temporal=lengthscale_agent_temporal, safety_threshold=safety_threshold)
+            x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)  # in this easy tree structure. We can use anytrees later
             agents[j] = [X_plot, communication_indices_list, x_new, x_new_neighbors, cube]  # this contains the multi-dimensional x_new_neighbors and the single one x_new
 
-        # Consensus in policy prediction; soon in loop
-        x_new_list_0 = [agents[0][-2][0], agents[1][-2][0]]
-        agents[0][2] = torch.mean(torch.tensor(x_new_list_0)).unsqueeze(0)
-        x_new_list_1 = [agents[0][-2][1], agents[1][-2][1], agents[2][-2][0]]
-        agents[1][2] = torch.mean(torch.tensor(x_new_list_1)).unsqueeze(0)
-        x_new_list_2 = [agents[1][-2][2], agents[2][-2][1], agents[3][-2][0]]
-        agents[2][2] = torch.mean(torch.tensor(x_new_list_2)).unsqueeze(0)
-        x_new_list_3 = [agents[2][-2][2], agents[3][-2][1]]
-        agents[3][2] = torch.mean(torch.tensor(x_new_list_3)).unsqueeze(0)
-
-        if i != iterations - 1:  # last iteration; do not add the new point; we just want the updated model
-            x_new_full = torch.cat([agents[j][2] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new ("1D ones")
+        if t != iterations - 1:  # last iteration; do not add the new point; we just want the updated model
+            if sequential_expert or random_expert:
+                if sequential_expert:
+                    expert_agent = (t - 1) % num_agents
+                elif random_expert:
+                    expert_agent = np.random.choice(range(num_agents))  # who is the expert this round?
+                expert_x_new_neighbors = agents[expert_agent][3][:-1]  # exclude time. Wait time is never in?
+                expert_communication_list = agents[expert_agent][1]
+                x_new_full = torch.zeros(num_agents).unsqueeze(0)
+                x_new_full[:, expert_communication_list] = expert_x_new_neighbors
+                for jj in range(num_agents):
+                    if jj not in expert_communication_list:
+                        x_new_full[:, jj] = agents[jj][2]  # get their x_new prediction
+            else:
+                x_new_full = torch.cat([agents[j][2] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new ("1D ones")
             if torch.any(torch.all(X_sample_full == x_new_full, dim=1)):
-                raise Exception('Same same same')
+                message = f'Same same same; {x_new_full}'
+                warnings.warn(message)
             y_new = torch.tensor(gt.f(x_new_full), dtype=torch.float32)  # this is the applied action!
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
     print('Hello')
 
+    # Development of reward
+    plot_reward(X_sample, Y_sample, safety_threshold, gt)
+
+    # Agents 0 and 3 Mean and UCB
+    plot_2D_mean(cube=agents[0][-1], agent_number=0)
+    plot_2D_mean(cube=agents[3][-1], agent_number=3)
+    plot_2D_UCB(cube=agents[0][-1], agent_number=0)
+    plot_2D_UCB(cube=agents[3][-1], agent_number=3)
+
+    # Agents 1 and 2 3D explored domain
+    plot_3D_sampled_space(cube=agents[1][-1], agent_number=1)
+    plot_3D_sampled_space(cube=agents[2][-1], agent_number=2)
+
+    # All agents 1D explored domain
+    plot_1D_sampled_space(cube=agents[0][-1], agent_number=0)
+    plot_1D_sampled_space(cube=agents[1][-1], agent_number=1)
+    plot_1D_sampled_space(cube=agents[2][-1], agent_number=2)
+    plot_1D_sampled_space(cube=agents[3][-1], agent_number=3)
+
+    # How much did we explore? Convex hull volume
+    hull = ConvexHull(X_sample_full.numpy())
+    print(f'We explored about {hull.volume*100}% of the domain.')
+
+
+'''
     for j in range(1, num_agents):  # not the first because we keep this constant
         cube = agents[j][-1]
         plt.figure()
@@ -128,3 +194,4 @@ if __name__ == '__main__':
     plt.xlabel('Iteration')
     plt.ylabel('Global reward')
     # plt.savefig(f'../{num_agents}_agents_agent_0_safety.png')
+'''
