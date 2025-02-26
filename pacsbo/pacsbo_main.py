@@ -21,6 +21,7 @@ from scipy.special import comb
 # from plot import plot_1D, plot_2D_contour, plot_1D_SafeOpt_with_sets, plot_gym, plot_gym_together
 import gym
 import sys
+import os
 from custom_kernels import RadialTemporalKernel
 # sys.path.insert(1,  './vision-based-furuta-pendulum-master')
 # from gym_brt.envs import QubeBalanceEnv, QubeSwingupEnv
@@ -87,7 +88,7 @@ class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build 
         # self.kernel_temporal = gpytorch.kernels.MaternKernel(nu=1.5)  # corresponding to Ohrnstein-Uhlenbeck process   
         self.kernel_temporal = RadialTemporalKernel(active_dims=[train_x.shape[1]-1])
         self.kernel_spatio.lengthscale = lengthscale_spatio
-        # self.kernel_temporal.lengthscale = lengthscale_temporal
+        # self.kernel_temporal.lengthscale = 1e6
         # if iteration.item() <= 10:
         #     self.kernel_temporal.lengthscale = 100
         # elif iteration.item() <= 15:
@@ -112,6 +113,9 @@ class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build 
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+    def return_kernels(self):
+        return self.kernel, self.kernel_spatio, self.kernel_temporal
 
 
 def reshape_with_extra_dims(tensor, num_dims):
@@ -227,6 +231,7 @@ class PACSBO():
     def compute_model(self, gpr):
         self.model = gpr(data_x=self.x_sample, train_y=self.y_sample, iteration=self.iteration,
                           noise_std=self.noise_std, lengthscale_spatio=self.lengthscale_spatio, lengthscale_temporal=self.lengthscale_temporal)
+        self.kernel, self.spatio_kernel, self.temporal_kernel = gpr.return_kernels(self.model)
         self.K = self.model(self.x_sample).covariance_matrix
 
     def compute_mean_var(self):
@@ -253,7 +258,8 @@ class PACSBO():
         self.lcb = self.mean - self.beta*torch.sqrt(self.var)  # we have to use standard deviation instead of variance
         self.ucb = self.mean + self.beta*torch.sqrt(self.var)
         if -np.inf in self.lcb:
-            breakpoint()
+            warnings.warn("-inf in lcb")
+            # breakpoint()
         
 
     def compute_safe_set(self):
@@ -317,7 +323,7 @@ class PACSBO():
         inside_log = torch.det(torch.eye(self.x_sample.shape[0]) + (1/self.noise_std*self.K))
         inside_sqrt = self.noise_std*torch.log(inside_log) - (2*self.noise_std*torch.log(torch.tensor(self.delta_confidence)))
         if inside_sqrt == np.inf:
-            breakpoint()
+            pass # breakpoint()
         self.beta = self.B + torch.sqrt(inside_sqrt)
 
     def compute_RKHS_norm_true(self):

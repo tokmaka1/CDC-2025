@@ -4,6 +4,7 @@ import os
 import torch
 import warnings
 import numpy as np
+import gpytorch
 from tqdm import tqdm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -19,7 +20,7 @@ print("Changed working directory to:", os.getcwd())
 
 from safebo_MAS_plot import plot_2D_mean, plot_2D_UCB, plot_reward, plot_3D_sampled_space, plot_1D_sampled_space
 from pacsbo.pacsbo_main import compute_X_plot, ground_truth, initial_safe_samples, PACSBO, GPRegressionModel
-
+from custom_kernels import generating_kernel_paths
 
 
 
@@ -81,8 +82,8 @@ if __name__ == '__main__':
     delta_confidence = 0.9
     exploration_threshold = 0
     dimension = num_agents
-    gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)
-    safety_threshold = torch.quantile(gt.fX, 0.1).item()
+    gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)    
+    safety_threshold = -np.infty  # torch.quantile(gt.fX, 0.001).item()
     print(f'The heuristic maximum of the function is {max(gt.fX)} and located at {gt.X_center[torch.argmax(gt.fX)]}.')
     print(f'The safety threshold is {safety_threshold}.')
 
@@ -111,7 +112,7 @@ if __name__ == '__main__':
     for j in range(num_agents):  # set-up agents
         n_dimensions = 2 if j==0 or j==num_agents-1 else 3
         # X_plot needs to be determined for every agent given their position in graph
-        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e5**(1/n_dimensions)))
+        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(5e4**(1/n_dimensions)))
         # which indices are relevant for this agent? for agent 0 it is 0 and 1, for agent 1 it is 0,1,2 etc; see graph
         communication_indices_list = [j, j + 1] if j == 0 else [j - 1, j, j + 1] if 0 < j < num_agents - 1 else [num_agents - 2, num_agents - 1]
         agents[j] = [X_plot, communication_indices_list, None, None, None]
@@ -152,6 +153,11 @@ if __name__ == '__main__':
     # Development of reward
     plot_reward(X_sample, Y_sample, safety_threshold, gt)
 
+    warnings.warn("Beware the dimensions here!")
+    K_T = cube.model.kernel_temporal(cube.iteration_x.float(), cube.iteration_x.float()).to_dense()
+    K_S = cube.model.kernel_spatio(X_sample_full, X_sample_full).to_dense()
+    X_iteration_full = torch.cat((X_sample_full, cube.iteration_x), dim=1)
+    K_total = cube.model.kernel(X_iteration_full, X_iteration_full).to_dense()
     # Agents 0 and 3 Mean and UCB
     plot_2D_mean(cube=agents[0][-1], agent_number=0)
     plot_2D_mean(cube=agents[3][-1], agent_number=3)
@@ -171,6 +177,64 @@ if __name__ == '__main__':
     # How much did we explore? Convex hull volume
     hull = ConvexHull(X_sample_full.numpy())
     print(f'We explored about {hull.volume*100}% of the domain.')
+
+    list_Y = []
+    kernel = gpytorch.kernels.MaternKernel(nu=1.5)
+    kernel.lengthscale = 10
+    # kernel=cube.model.kernel_temporal
+    for _ in range(20):
+        # Y_c = generating_kernel_paths(, RKHS_norm=1)
+        Y_c = generating_kernel_paths(kernel=kernel, RKHS_norm=1)
+        list_Y.append(Y_c)
+    plt.figure()
+    for Y_c in list_Y:
+        plt.plot(range(1, 50), Y_c.detach().numpy(), color='magenta', alpha=0.2)
+    plt.xlabel('Iterations $t$')
+    plt.ylabel('$y$')
+    plt.title('Sample paths of RKHS of RadialTemporalKernel')
+    # plt.savefig('Matern12kernel_ell_10.png')
+
+
+    # Plot the kernel
+    # Plot the 1D (radial) and 2D for all kernels
+    kernel = gpytorch.kernels.MaternKernel(nu=1.5)
+    kernel.lengthscale = 1
+    X_c = torch.arange(1, 50).float()
+    K = kernel(X_c, X_c).to_dense()
+    plt.plot(X_c, K[0, :].detach().numpy())
+    plt.xlabel('$\|t-t^\prime\|_2$')
+    plt.ylabel('$k(\|t-t^\prime\|_2$')
+    plt.title('Matern12 kernel ($\ell=1$)')
+
+    kernel=cube.model.kernel_temporal
+    K = kernel(X_iteration_full).to_dense()  # careful here; do we really need all of this? It depends. If we call the kernel from the model, we might need this because of the active dims
+    # We just define the class here new and then we have the kernel
+    kernel = RadialTemporalKernel()
+    K = kernel(X_c, X_c).to_dense()
+    plt.figure()
+    plt.plot(X_c, K[0, :].detach().numpy())
+    plt.xlabel('$\|t-t^\prime\|_2$')
+    plt.ylabel('$k(\|t-t^\prime\|_2$')
+    plt.title('RadialTemporalKernel')
+
+
+    # 2D plots
+    X_c = torch.arange(1, 50).float()
+    X_c1, X_c2 = torch.meshgrid(X_c, X_c)
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Plot the surface
+    surf = ax.plot_surface(X_c1, X_c2, K, cmap='viridis', edgecolor='none')
+    cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+    cbar.set_label('Z value')
+    ax.set_xlabel('$t_1$')
+    ax.set_ylabel('$t_2$')
+    ax.set_zlabel('$k(t_1,t_2)$')
+    ax.set_title('RadialTemporalKernel')
+    plt.savefig('Radialtemporalkernel_2D.png')
+
+
 
 
 '''
