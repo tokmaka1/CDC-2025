@@ -30,66 +30,25 @@ class RadialTemporalKernel(Kernel):
             return NonLazyTensor(kernel_matrix)
 
 
-def custom_kernel(t, t_prime, ell):
-    exp_weight = np.exp(-np.abs(t-t_prime)/ell)
-    return (1-exp_weight)*1/np.maximum(t, t_prime) + exp_weight
-
-
-
-
-
-def generating_kernel_paths(kernel, RKHS_norm):  # Frequentist approach, only pre-RKHS
-    X_c = torch.arange(1, 50).float()
-    alpha = torch.rand(49)
-    K = kernel(X_c, X_c)
-    quadr_form_val = alpha @ K @ alpha
-    warnings.warn('Covariance matrix of temporal kernel?')
-    alpha /= torch.sqrt(quadr_form_val)*RKHS_norm
-    Y_c = alpha @ K  # evaluation points = center points
-    return Y_c
-
-
-def generate_custom_kernel_paths(RKHS_norm):  # Frequentist approach, only pre-RKHS
-    T = np.linspace(1, 50, 1000)
-    X, Y = np.meshgrid(T, T)
-    ell_matrix = np.ones_like(X)  # like this is constant
-    for i in range(ell_matrix.shape[0]):
-        for j in range(ell_matrix.shape[1]):
-            # ell_matrix[i, j] = (1e-2*max(X[i,j], Y[i,j])**2)
-            max_time = max(X[i,j], Y[i,j])
-            if max_time < 5:
-                ell_matrix[i,j] = 1e-8
-            elif max_time < 10:
-                ell_matrix[i,j] = 1e-7
-            elif max_time < 15:
-                ell_matrix[i,j] = 1e-6
-            elif max_time < 20:
-                ell_matrix[i,j] = 1e-5
-            elif max_time < 25:
-                ell_matrix[i,j] = 1e-4
-            elif max_time < 30:
-                ell_matrix[i,j] = 1e-3
-            elif max_time < 35:
-                ell_matrix[i,j] = 1e-2
-            elif max_time < 40:
-                ell_matrix[i,j] = 1e-1
-            elif max_time < 45:
-                ell_matrix[i,j] = 1
-            elif max_time <= 50:
-                ell_matrix[i,j] = 10
-
- 
-    K = custom_kernel(X, Y, ell=ell_matrix)  # This is the way to get covariance kernel with my implementation
-    alpha = np.random.rand(1000)
-    quadr_form_val = alpha @ K @ alpha
-    alpha /= np.sqrt(quadr_form_val)*RKHS_norm
-    Y_c = alpha @ K  # evaluation points = center points
-    return Y_c
-
+def custom_kernel(t, t_prime, ell):  
+    warnings.warn("To use as Pytorch kernel, we need different distance. But with 1D input, this is fine")        
+    # But this will always be 1D input since this is time
+    T, T_prime = torch.meshgrid(t, t_prime)
+    if type(ell) == int:
+        pass
+    elif ell == 'varying':
+        # ell = torch.ones_like(T)
+        # for i in range(ell.shape[0]):
+        #     for j in range(ell.shape[1]):
+        #         ell[i, j] = torch.min(T[i, j], T_prime[i,j])
+        ell = torch.minimum(T, T_prime)/5
+    exp_weight = torch.exp(-torch.abs(T-T_prime)/ell)  # then also abs is fine
+    return (1-exp_weight)*1/torch.maximum(T, T_prime) + exp_weight
 
 
 
 if __name__ == '__main__':
+    # This is to plot covariances
     iterations = 50
     lengthscale = 10**-10
     T, T_prime = np.meshgrid(np.linspace(1, iterations, 1000), np.linspace(1, iterations, 1000))  # we need linspace for plotting and not range because of interpolation
