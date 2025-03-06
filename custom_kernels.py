@@ -33,18 +33,37 @@ class RadialTemporalKernel(Kernel):
 def custom_kernel(t, t_prime, ell):  
     warnings.warn("To use as Pytorch kernel, we need different distance. But with 1D input, this is fine")        
     # But this will always be 1D input since this is time
-    T, T_prime = torch.meshgrid(t, t_prime)
+    T, T_prime = torch.meshgrid(t, t_prime)  # T is constant row, T_prime is constant column
     if type(ell) == int:
         pass
     elif ell == 'varying':
-        # ell = torch.ones_like(T)
-        # for i in range(ell.shape[0]):
-        #     for j in range(ell.shape[1]):
-        #         ell[i, j] = torch.min(T[i, j], T_prime[i,j])
-        ell = torch.minimum(T, T_prime)/5
-    exp_weight = torch.exp(-torch.abs(T-T_prime)/ell)  # then also abs is fine
-    return (1-exp_weight)*1/torch.maximum(T, T_prime) + exp_weight
+        ell = torch.ones_like(T)
+        for i in range(ell.shape[0]):
+            for j in range(ell.shape[1]):
+                if min(T[i, j], T_prime[i, j]) < 40:
+                    ell[i, j] = 1e-3
+                # elif min(T[i, j], T_prime[i, j]) < 4:
+                #     ell[i, j] = 1
+                else:
+                    ell[i, j] = 1
+        # ell = torch.minimum(T, T_prime)/5
 
+    exp_beginning = torch.exp(-torch.abs(T-T_prime)**2/ell)  # then also abs is fine
+    K_beginning = 1/(torch.maximum(T, T_prime)) # we can also have this "constant and small" then this will go to 0; **0.1 if this diminishes too quickly; but still does not help
+    # constant and large will remain at the initial value
+    # for i in range(K_beginning.shape[0]):  # Go through all rows
+    #     for j in range(K_beginning.shape[1]):  # go through all columns
+    #         b = torch.rand(1)/torch.max(T[i,j], T_prime[i,j])
+    #         K_beginning[i, j] = b.item()
+    beginning = (1-exp_beginning)*K_beginning + exp_beginning
+    # a = 1 - torch.exp(-torch.minimum(T, T_prime)/30)
+    a = 1 - (torch.minimum(T, T_prime)/50)**2  # iteration_end; this is the most natural connection
+    end = torch.exp(-torch.abs(T-T_prime)**2/1)  # make it smooth and put **2
+    # this random 1 is good. But just a bit differently. Not THAT much roughness. Other weights. History dependence maye a bit more. Let's see.
+    # Random walk? Random branching?
+    # We can weight this with reward
+    # Brownian motion? Kronecker delta? Make sure this itself is a valud kernel, then proving PD is easy.
+    return a*beginning + (1-a)*end, a   #    # beginning, a  # 
 
 
 if __name__ == '__main__':
