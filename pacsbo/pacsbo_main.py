@@ -22,7 +22,7 @@ from scipy.special import comb
 import gym
 import sys
 import os
-from custom_kernels import RadialTemporalKernel
+from custom_kernels import RadialTemporalKernel, Matern12_RBF_WeightedSumKernel
 # sys.path.insert(1,  './vision-based-furuta-pendulum-master')
 # from gym_brt.envs import QubeBalanceEnv, QubeSwingupEnv
 # from gym_brt.control.control import QubeHoldControl, QubeFlipUpControl
@@ -73,7 +73,9 @@ def predict(model, input1, input2):
 
 
 class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build "new"
-    def __init__(self, data_x, train_y, iteration, noise_std, lengthscale_spatio, lengthscale_temporal):
+    def __init__(self, data_x, train_y, iteration, noise_std, lengthscale_spatio,
+                a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12,
+                output_variance_RBF, output_variance_Ma12):
         # gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=self.lengthscale)
         n_devices = 1
         output_device = torch.device('cpu')
@@ -86,20 +88,10 @@ class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build 
         self.kernel_spatio = gpytorch.kernels.MaternKernel(nu=2.5, active_dims=range(train_x.shape[1]-1))
         # self.kernel_temporal = gpytorch.kernels.rbf_kernel.RBFKernel(active_dims=[train_x.shape[1]-1])
         # self.kernel_temporal = gpytorch.kernels.MaternKernel(nu=1.5)  # corresponding to Ohrnstein-Uhlenbeck process   
-        self.kernel_temporal = RadialTemporalKernel(active_dims=[train_x.shape[1]-1])
+        self.kernel_temporal = Matern12_RBF_WeightedSumKernel(active_dims=[train_x.shape[1]-1], a_parameter=a_parameter, lengthscale_temporal_RBF=lengthscale_temporal_RBF,
+                                                              lengthscale_temporal_Ma12=lengthscale_temporal_Ma12, output_variance_RBF=output_variance_RBF,
+                                                              output_variance_Ma12=output_variance_Ma12)
         self.kernel_spatio.lengthscale = lengthscale_spatio
-        # self.kernel_temporal.lengthscale = 1e6
-        # if iteration.item() <= 10:
-        #     self.kernel_temporal.lengthscale = 100
-        # elif iteration.item() <= 15:
-        #     self.kernel_temporal.lengthscale = 50
-        # elif iteration.item() <= 20:
-        #     self.kernel_temporal.lengthscale = 10
-        # elif iteration.item() <= 25:
-        #     self.kernel_temporal.lengthscale = 50
-        # elif iteration.item() > 26:
-        #     self.kernel_temporal.lengthscale = 100
-
         # Create product kernel
         self.kernel = gpytorch.kernels.ProductKernel(self.kernel_spatio, self.kernel_temporal)
 
@@ -204,10 +196,16 @@ class ground_truth():
 
 class PACSBO():
     def __init__(self, delta_confidence, noise_std, tuple_ik, X_plot, X_sample,
-                Y_sample, iteration, safety_threshold, exploration_threshold, gt, lengthscale_spatio, lengthscale_temporal, compute_all_sets=False):
+                Y_sample, iteration, safety_threshold, exploration_threshold, gt, lengthscale_spatio,
+                a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12,
+                output_variance_RBF, output_variance_Ma12, compute_all_sets=False):
         self.compute_all_sets = compute_all_sets
         self.lengthscale_spatio = lengthscale_spatio
-        self.lengthscale_temporal = lengthscale_temporal
+        self.a_parameter = a_parameter
+        self.lengthscale_temporal_RBF = lengthscale_temporal_RBF
+        self.lengthscale_temporal_Ma12 = lengthscale_temporal_Ma12
+        self.output_variance_RBF = output_variance_RBF
+        self.output_variance_Ma12 = output_variance_Ma12
         self.gt = gt  # at least for toy experiments it works like this.
         self.exploration_threshold = exploration_threshold
         self.delta_confidence = delta_confidence
@@ -230,7 +228,9 @@ class PACSBO():
 
     def compute_model(self, gpr):
         self.model = gpr(data_x=self.x_sample, train_y=self.y_sample, iteration=self.iteration,
-                          noise_std=self.noise_std, lengthscale_spatio=self.lengthscale_spatio, lengthscale_temporal=self.lengthscale_temporal)
+                          noise_std=self.noise_std, lengthscale_spatio=self.lengthscale_agent_spatio,
+                          lengthscale_agent_spatio=self.lengthscale_agent_spatio, a_parameter=self.a_parameter, lengthscale_temporal_RBF=self.lengthscale_temporal_RBF,
+                          lengthscale_temporal_Ma12=self.lengthscale_temporal_Ma12, output_variance_RBF=self.output_variance_RBF, output_variance_Ma12=self.output_variance_Ma12)
         self.kernel, self.spatio_kernel, self.temporal_kernel = gpr.return_kernels(self.model)
         self.K = self.model(self.x_sample).covariance_matrix
 
@@ -239,7 +239,8 @@ class PACSBO():
         self.f_preds = self.model(self.discr_domain)  # the X value will also be somehow hidden inside this f_preds
         self.mean = self.f_preds.mean
         # print(max(abs(self.mean)))
-        self.var = self.f_preds.variance
+        warnings.warn('Different way of variance prediction')
+        self.var = self.f_preds.covariance_matrix.diagonal()  # self.f_preds.variance
 
     def compute_confidence_intervals_training(self, dict_local_RKHS_norms={}):
         if self.tuple in dict_local_RKHS_norms:

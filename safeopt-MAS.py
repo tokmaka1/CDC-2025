@@ -20,14 +20,15 @@ print("Changed working directory to:", os.getcwd())
 
 from safebo_MAS_plot import plot_2D_mean, plot_2D_UCB, plot_reward, plot_3D_sampled_space, plot_1D_sampled_space
 from pacsbo.pacsbo_main import compute_X_plot, ground_truth, initial_safe_samples, PACSBO, GPRegressionModel
-from custom_kernels import generating_kernel_paths
 
 
 
 # sys.path.append(os.path.abspath("./pacsbo"))
 
 
-def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, X_plot, X_sample, Y_sample, t, lengthscale_spatio, lengthscale_temporal, safety_threshold):
+def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, X_plot, X_sample, Y_sample, t,
+                         lengthscale_agent_spatio, a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12,
+                           output_variance_RBF, output_variance_Ma12, safety_threshold):
     def compute_sets(cube):
         cube.compute_safe_set()
         cube.maximizer_routine(best_lower_bound_others=-np.infty)
@@ -40,7 +41,9 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
 
     cube = PACSBO(delta_confidence=delta_confidence, noise_std=noise_std, tuple_ik=(-1, -1), X_plot=X_plot, X_sample=X_sample,
                     Y_sample=Y_sample, iteration=t, safety_threshold=safety_threshold, exploration_threshold=exploration_threshold, 
-                    gt=gt, compute_all_sets=False, lengthscale_spatio=lengthscale_spatio, lengthscale_temporal=lengthscale_temporal)  # all samples that we currently have
+                    gt=gt, compute_all_sets=False, lengthscale_spatio=lengthscale_agent_spatio, lengthscale_agent_spatio=lengthscale_agent_spatio,
+                    a_parameter=a_parameter, lengthscale_temporal_RBF=lengthscale_temporal_RBF, lengthscale_temporal_Ma12=lengthscale_temporal_Ma12,
+                    output_variance_RBF=output_variance_RBF, output_variance_Ma12=output_variance_Ma12)  # all samples that we currently have
     # Building a new object in every iteration
     update_model(cube)
     compute_sets(cube)
@@ -74,14 +77,23 @@ if __name__ == '__main__':
     random_expert = False
     sequential_expert = True
     agents = {}
-    lengthscale_agent_spatio = 0.5  # 0.1
-    lengthscale_agent_temporal = 1e6  # this will be over-written
-    lengthscale_gt = num_agents/10
     noise_std = 1e-1  # increase a little for numerical stability
     RKHS_norm = 1
     delta_confidence = 0.9
     exploration_threshold = 0
     dimension = num_agents
+
+    '''
+    Hyperparameters
+    '''
+    lengthscale_agent_spatio = 0.5  # 0.1
+    a_parameter = 200  # weighting factor
+    lengthscale_temporal_RBF = 5
+    lengthscale_temporal_Ma12 = 0.2
+    output_variance_RBF = 1
+    output_variance_Ma12 = num_agents
+
+    lengthscale_gt = num_agents/10
     gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)    
     safety_threshold = -np.infty  # torch.quantile(gt.fX, 0.001).item()
     print(f'The heuristic maximum of the function is {max(gt.fX)} and located at {gt.X_center[torch.argmax(gt.fX)]}.')
@@ -112,7 +124,7 @@ if __name__ == '__main__':
     for j in range(num_agents):  # set-up agents
         n_dimensions = 2 if j==0 or j==num_agents-1 else 3
         # X_plot needs to be determined for every agent given their position in graph
-        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(5e4**(1/n_dimensions)))
+        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))  # even less points?
         # which indices are relevant for this agent? for agent 0 it is 0 and 1, for agent 1 it is 0,1,2 etc; see graph
         communication_indices_list = [j, j + 1] if j == 0 else [j - 1, j, j + 1] if 0 < j < num_agents - 1 else [num_agents - 2, num_agents - 1]
         agents[j] = [X_plot, communication_indices_list, None, None, None]
@@ -123,7 +135,11 @@ if __name__ == '__main__':
             X_plot = agents[j][0]
             communication_indices_list = agents[j][1]
             X_sample = X_sample_full[:, communication_indices_list]
-            x_new_neighbors, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, t, lengthscale_spatio=lengthscale_agent_spatio, lengthscale_temporal=lengthscale_agent_temporal, safety_threshold=safety_threshold)
+            x_new_neighbors, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, t, lengthscale_spatio=lengthscale_agent_spatio,
+                                                             lengthscale_agent_spatio=lengthscale_agent_spatio, a_parameter=a_parameter, lengthscale_temporal_RBF=lengthscale_temporal_RBF,
+                                                             lengthscale_temporal_Ma12=lengthscale_temporal_Ma12, output_variance_RBF=output_variance_RBF, output_variance_Ma12=output_variance_Ma12,
+                                                             safety_threshold=safety_threshold)
+
             x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)  # in this easy tree structure. We can use anytrees later
             agents[j] = [X_plot, communication_indices_list, x_new, x_new_neighbors, cube]  # this contains the multi-dimensional x_new_neighbors and the single one x_new
 

@@ -2,7 +2,7 @@ import torch
 import gpytorch
 from gpytorch.kernels import Kernel
 import warnings
-from gpytorch.lazy import NonLazyTensor, LazyTensor, DiagLazyTensor
+from gpytorch.lazy import NonLazyTensor, LazyTensor, DiagLazyTensor, MulLazyTensor, LazyEvaluatedKernelTensor
 import numpy as np
 
 class RadialTemporalKernel(Kernel):
@@ -30,40 +30,86 @@ class RadialTemporalKernel(Kernel):
             return NonLazyTensor(kernel_matrix)
 
 
-def custom_kernel(t, t_prime, ell):  
-    warnings.warn("To use as Pytorch kernel, we need different distance. But with 1D input, this is fine")        
-    # But this will always be 1D input since this is time
-    T, T_prime = torch.meshgrid(t, t_prime)  # T is constant row, T_prime is constant column
-    if type(ell) == int:
-        pass
-    elif ell == 'varying':
-        ell = torch.ones_like(T)
-        for i in range(ell.shape[0]):
-            for j in range(ell.shape[1]):
-                if min(T[i, j], T_prime[i, j]) < 40:
-                    ell[i, j] = 1e-3
-                # elif min(T[i, j], T_prime[i, j]) < 4:
-                #     ell[i, j] = 1
-                else:
-                    ell[i, j] = 1
-        # ell = torch.minimum(T, T_prime)/5
+class A_Kernel(gpytorch.kernels.Kernel):
+    """
+    Custom kernel where a(t, t') = 1 - exp(-min(t, t') / 200)
+    """
+    # has_lengthscale = False  # This kernel does not have a trainable lengthscale
+    def __init__(self, a_parameter=200, **kwargs):
+        super().__init__(**kwargs)  # Ensure Kernel base class is initialized
+        self.a_parameter = a_parameter
 
-    exp_beginning = torch.exp(-torch.abs(T-T_prime)**2/ell)  # then also abs is fine
-    K_beginning = 1/(torch.maximum(T, T_prime)) # we can also have this "constant and small" then this will go to 0; **0.1 if this diminishes too quickly; but still does not help
-    # constant and large will remain at the initial value
-    # for i in range(K_beginning.shape[0]):  # Go through all rows
-    #     for j in range(K_beginning.shape[1]):  # go through all columns
-    #         b = torch.rand(1)/torch.max(T[i,j], T_prime[i,j])
-    #         K_beginning[i, j] = b.item()
-    beginning = (1-exp_beginning)*K_beginning + exp_beginning
-    # a = 1 - torch.exp(-torch.minimum(T, T_prime)/30)
-    a = 1 - (torch.minimum(T, T_prime)/50)**2  # iteration_end; this is the most natural connection
-    end = torch.exp(-torch.abs(T-T_prime)**2/1)  # make it smooth and put **2
-    # this random 1 is good. But just a bit differently. Not THAT much roughness. Other weights. History dependence maye a bit more. Let's see.
-    # Random walk? Random branching?
-    # We can weight this with reward
-    # Brownian motion? Kronecker delta? Make sure this itself is a valud kernel, then proving PD is easy.
-    return a*beginning + (1-a)*end, a   #    # beginning, a  # 
+    def forward(self, x1, x2, **params):
+        """ Compute the lazy kernel matrix for `a(t, t')` """
+        t1 = x1[..., -1]  # Extract time components
+        t2 = x2[..., -1]
+
+        # Compute a(t, t')
+        a_matrix = 1 - torch.exp(-torch.minimum(t1.unsqueeze(1), t2.unsqueeze(0)) / self.a_parameter)
+        warnings.warn('Correct unsqueezing?')
+
+        # Return as a LazyTensor for memory efficiency
+        return gpytorch.lazy.NonLazyTensor(a_matrix)
+
+
+class A_Neg_Kernel(gpytorch.kernels.Kernel):
+    """
+    Custom kernel where a_neg(t, t') = exp(-min(t, t') / 200)
+    """
+    # has_lengthscale = False
+    def __init__(self, a_parameter=200, **kwargs):
+        super().__init__(**kwargs)  # Ensure Kernel base class is initialized
+        self.a_parameter = a_parameter
+
+    def forward(self, x1, x2, **params):
+        """ Compute the lazy kernel matrix for `a_neg(t, t')` """
+        t1 = x1[..., -1]  # Extract time components
+        t2 = x2[..., -1]
+
+        # Compute a_neg(t, t')
+        a_neg_matrix = torch.exp(-torch.minimum(t1.unsqueeze(1), t2.unsqueeze(0)) / self.a_parameter)
+
+        # Return as a LazyTensor
+        return gpytorch.lazy.NonLazyTensor(a_neg_matrix)
+
+
+class Matern12_RBF_WeightedSumKernel(gpytorch.kernels.Kernel):
+    is_stationary = False  # Since 'a' is input-dependent, the kernel is non-stationary
+
+    def __init__(self, active_dims, a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, output_variance_Ma12, **kwargs):
+        super().__init__(**kwargs)
+        self.a_parameter = a_parameter
+        self.rbf = gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.RBFKernel(active_dims=active_dims),
+            outputscale=output_variance_RBF
+        )
+        self.rbf.base_kernel.lengthscale = lengthscale_temporal_RBF
+
+        self.matern12 = gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.MaternKernel(active_dims=active_dims),
+            outputscale=output_variance_Ma12
+        )
+        self.matern12.base_kernel.lengthscale = lengthscale_temporal_Ma12
+        self.a_kernel = A_Kernel(a_parameter)
+        self.a_neg_kernel = A_Neg_Kernel(a_parameter)
+
+        self.RBF_part = gpytorch.kernels.ProductKernel(self.rbf, self.a_kernel)
+        self.Ma12_part = gpytorch.kernels.ProductKernel(self.matern12, self.a_neg_kernel)
+        self.temporal_kernel = self.RBF_part + self.Ma12_part
+
+    def forward(self, x1, x2, **params):
+        return self.temporal_kernel(x1, x2)
+
+
+def Matern12_RBF_weighted_sum(t, t_prime, ell_1, ell_2):  # Now the 
+    T, T_prime = torch.meshgrid(t, t_prime)  # T is constant row, T_prime is constant column
+    # nu = f(t)... Is that possible?
+    # Let us have $\ell=5$ for all.
+    RBF = torch.exp(-torch.abs(T-T_prime)**2/ell_1)
+    Ma12 = 2*torch.exp(-torch.abs(T-T_prime)/ell_2)
+    # a should be RBF but on its head
+    a = 1 - torch.exp(-(torch.minimum(T, T_prime)-25)**2/200) # just a quite flat Gaussian as weight function
+    return a*RBF + (1-a)*Ma12, a   #    # beginning, a  # 
 
 
 if __name__ == '__main__':
