@@ -45,7 +45,12 @@ class A_Kernel(gpytorch.kernels.Kernel):
         t2 = x2[..., -1]
 
         # Compute a(t, t')
-        a_matrix = 1 - torch.exp(-torch.minimum(t1.unsqueeze(1), t2.unsqueeze(0)) / self.a_parameter)
+        a_matrix = 1 - torch.exp(
+            (-
+             (torch.minimum(t1.unsqueeze(1), t2.unsqueeze(0))-25)**2
+             /self.a_parameter
+             )
+            )
         warnings.warn('Correct unsqueezing?')
 
         # Return as a LazyTensor for memory efficiency
@@ -67,7 +72,12 @@ class A_Neg_Kernel(gpytorch.kernels.Kernel):
         t2 = x2[..., -1]
 
         # Compute a_neg(t, t')
-        a_neg_matrix = torch.exp(-torch.minimum(t1.unsqueeze(1), t2.unsqueeze(0)) / self.a_parameter)
+        a_neg_matrix = torch.exp(
+            (-
+             (torch.minimum(t1.unsqueeze(1), t2.unsqueeze(0))-25)**2
+             /self.a_parameter
+             )
+            )
 
         # Return as a LazyTensor
         return gpytorch.lazy.NonLazyTensor(a_neg_matrix)
@@ -80,16 +90,17 @@ class Matern12_RBF_WeightedSumKernel(gpytorch.kernels.Kernel):
         super().__init__(**kwargs)
         self.a_parameter = a_parameter
         self.rbf = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(active_dims=active_dims),
-            outputscale=output_variance_RBF
+            gpytorch.kernels.RBFKernel(active_dims=active_dims)#,
+            # outputscale=output_variance_RBF
         )
         self.rbf.base_kernel.lengthscale = lengthscale_temporal_RBF
+        self.rbf.outputscale = output_variance_RBF  # Ensure this is correctly set
 
         self.matern12 = gpytorch.kernels.ScaleKernel(
             gpytorch.kernels.MaternKernel(active_dims=active_dims),
-            outputscale=output_variance_Ma12
         )
         self.matern12.base_kernel.lengthscale = lengthscale_temporal_Ma12
+        self.matern12.outputscale = output_variance_Ma12
         self.a_kernel = A_Kernel(a_parameter)
         self.a_neg_kernel = A_Neg_Kernel(a_parameter)
 

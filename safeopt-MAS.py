@@ -9,6 +9,14 @@ from tqdm import tqdm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from scipy.spatial import ConvexHull
+import torch.multiprocessing as mp
+from torch.multiprocessing import Pool
+
+np.random.seed(42)
+
+# Fix seed for PyTorch (CPU)
+torch.manual_seed(42)
+
 
 # Add the relative path to the system path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,9 +29,6 @@ print("Changed working directory to:", os.getcwd())
 from safebo_MAS_plot import plot_2D_mean, plot_2D_UCB, plot_reward, plot_3D_sampled_space, plot_1D_sampled_space
 from pacsbo.pacsbo_main import compute_X_plot, ground_truth, initial_safe_samples, PACSBO, GPRegressionModel
 
-
-
-# sys.path.append(os.path.abspath("./pacsbo"))
 
 
 def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, X_plot, X_sample, Y_sample, t,
@@ -40,8 +45,7 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
 
 
     cube = PACSBO(delta_confidence=delta_confidence, noise_std=noise_std, tuple_ik=(-1, -1), X_plot=X_plot, X_sample=X_sample,
-                    Y_sample=Y_sample, iteration=t, safety_threshold=safety_threshold, exploration_threshold=exploration_threshold, 
-                    gt=gt, compute_all_sets=False, lengthscale_spatio=lengthscale_agent_spatio, lengthscale_agent_spatio=lengthscale_agent_spatio,
+                    Y_sample=Y_sample, iteration=t, safety_threshold=safety_threshold, exploration_threshold=exploration_threshold, compute_all_sets=False, lengthscale_agent_spatio=lengthscale_agent_spatio,
                     a_parameter=a_parameter, lengthscale_temporal_RBF=lengthscale_temporal_RBF, lengthscale_temporal_Ma12=lengthscale_temporal_Ma12,
                     output_variance_RBF=output_variance_RBF, output_variance_Ma12=output_variance_Ma12)  # all samples that we currently have
     # Building a new object in every iteration
@@ -68,11 +72,36 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
             x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))
 
     return x_new, cube
+    
+
+
+def process_agent(j, agents_j, X_sample_full, Y_sample, t, hyperparameters):
+    noise_std, delta_confidence, exploration_threshold, RKHS_norm, lengthscale_agent_spatio, a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, output_variance_Ma12, safety_threshold = hyperparameters
+    X_plot = agents_j[0]
+    communication_indices_list = agents_j[1]
+    X_sample = X_sample_full[:, communication_indices_list]
+
+    x_new_neighbors, cube = acquisition_function(
+        noise_std, delta_confidence, exploration_threshold, RKHS_norm,
+        X_plot, X_sample, Y_sample, t, lengthscale_agent_spatio,
+        a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12,
+        output_variance_RBF, output_variance_Ma12, safety_threshold
+    )
+
+    x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)
+    agents_j = [
+        X_plot,
+        communication_indices_list,
+        x_new.detach(),  # Detach tensor
+        x_new_neighbors.detach(),  # Detach tensor
+    ]
+    return j, agents_j
 
 
 if __name__ == '__main__':
+    mp.set_start_method("spawn", force=True)  # Ensure safe multiprocessing with PyTorch
     # Generate ground truth
-    iterations = 50
+    iterations = 15
     num_agents = 4
     random_expert = False
     sequential_expert = True
@@ -86,34 +115,23 @@ if __name__ == '__main__':
     '''
     Hyperparameters
     '''
-    lengthscale_agent_spatio = 0.5  # 0.1
+    lengthscale_agent_spatio = 5e6  # 0.5
     a_parameter = 200  # weighting factor
-    lengthscale_temporal_RBF = 5
-    lengthscale_temporal_Ma12 = 0.2
+    lengthscale_temporal_RBF = 5e6
+    lengthscale_temporal_Ma12 = 5e6
     output_variance_RBF = 1
     output_variance_Ma12 = num_agents
 
     lengthscale_gt = num_agents/10
     gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)    
-    safety_threshold = -np.infty  # torch.quantile(gt.fX, 0.001).item()
+    safety_threshold = torch.quantile(gt.fX, 0.001).item()
     print(f'The heuristic maximum of the function is {max(gt.fX)} and located at {gt.X_center[torch.argmax(gt.fX)]}.')
     print(f'The safety threshold is {safety_threshold}.')
 
-    '''
-    Radial temporal kernel
-    plt.figure()
-    plt.plot(X,Y)
-    plt.xlabel('$\|t-t^\prime\|_2$')
-    plt.ylabel('$k(t,t^\prime)=k(\|t-t^\prime\|_2$')
-    plt.title('Radial temporal kernel')
-    plt.savefig('radial_temporal_kernel.png')
-    '''
+    hyperparameters = [noise_std, delta_confidence, exploration_threshold, RKHS_norm, lengthscale_agent_spatio,
+                    a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, 
+                    output_variance_Ma12, safety_threshold]
 
-    '''
-    We have nearest neighbor communication, the easiest way possible.
-    In a 3-agent setting, the undirected graph looks like: 1 - 2 - 3
-    We are not in the setting where we want to see the time-series with A0 actions being constant.
-    '''
     # Finding initial safe sample
     while True:
         X_sample_full = torch.rand(dimension).unsqueeze(0)  # just start here
@@ -124,7 +142,7 @@ if __name__ == '__main__':
     for j in range(num_agents):  # set-up agents
         n_dimensions = 2 if j==0 or j==num_agents-1 else 3
         # X_plot needs to be determined for every agent given their position in graph
-        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))  # even less points?
+        X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))  # more points?
         # which indices are relevant for this agent? for agent 0 it is 0 and 1, for agent 1 it is 0,1,2 etc; see graph
         communication_indices_list = [j, j + 1] if j == 0 else [j - 1, j, j + 1] if 0 < j < num_agents - 1 else [num_agents - 2, num_agents - 1]
         agents[j] = [X_plot, communication_indices_list, None, None, None]
@@ -132,16 +150,13 @@ if __name__ == '__main__':
 
     for t in tqdm(range(1, iterations)):
         for j in range(num_agents):  # this is parallelizable
-            X_plot = agents[j][0]
-            communication_indices_list = agents[j][1]
-            X_sample = X_sample_full[:, communication_indices_list]
-            x_new_neighbors, cube = acquisition_function(noise_std, delta_confidence, exploration_threshold, RKHS_norm, X_plot, X_sample, Y_sample, t, lengthscale_spatio=lengthscale_agent_spatio,
-                                                             lengthscale_agent_spatio=lengthscale_agent_spatio, a_parameter=a_parameter, lengthscale_temporal_RBF=lengthscale_temporal_RBF,
-                                                             lengthscale_temporal_Ma12=lengthscale_temporal_Ma12, output_variance_RBF=output_variance_RBF, output_variance_Ma12=output_variance_Ma12,
-                                                             safety_threshold=safety_threshold)
+            j, agents_j = process_agent(j, agents[j], X_sample_full, Y_sample, t, hyperparameters)
+            agents[j] = agents_j  # global dict.
+        # with Pool(processes=num_agents) as pool:
+        #     results = pool.starmap(process_agent, [(j, agents[j], X_sample_full, Y_sample, t, hyperparameters) for j in range(num_agents)])
+        # for j, agents_j in results:
+        #     agents[j] = agents_j
 
-            x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)  # in this easy tree structure. We can use anytrees later
-            agents[j] = [X_plot, communication_indices_list, x_new, x_new_neighbors, cube]  # this contains the multi-dimensional x_new_neighbors and the single one x_new
 
         if t != iterations - 1:  # last iteration; do not add the new point; we just want the updated model
             if sequential_expert or random_expert:
@@ -167,7 +182,7 @@ if __name__ == '__main__':
     print('Hello')
 
     # Development of reward
-    plot_reward(X_sample, Y_sample, safety_threshold, gt)
+    plot_reward(range(len(Y_sample)), Y_sample, safety_threshold, gt)
 
     warnings.warn("Beware the dimensions here!")
     K_T = cube.model.kernel_temporal(cube.iteration_x.float(), cube.iteration_x.float()).to_dense()

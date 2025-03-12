@@ -73,7 +73,7 @@ def predict(model, input1, input2):
 
 
 class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build "new"
-    def __init__(self, data_x, train_y, iteration, noise_std, lengthscale_spatio,
+    def __init__(self, data_x, train_y, iteration, noise_std, lengthscale_agent_spatio,
                 a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12,
                 output_variance_RBF, output_variance_Ma12):
         # gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=self.lengthscale)
@@ -91,7 +91,7 @@ class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build 
         self.kernel_temporal = Matern12_RBF_WeightedSumKernel(active_dims=[train_x.shape[1]-1], a_parameter=a_parameter, lengthscale_temporal_RBF=lengthscale_temporal_RBF,
                                                               lengthscale_temporal_Ma12=lengthscale_temporal_Ma12, output_variance_RBF=output_variance_RBF,
                                                               output_variance_Ma12=output_variance_Ma12)
-        self.kernel_spatio.lengthscale = lengthscale_spatio
+        self.kernel_spatio.lengthscale = lengthscale_agent_spatio
         # Create product kernel
         self.kernel = gpytorch.kernels.ProductKernel(self.kernel_spatio, self.kernel_temporal)
 
@@ -196,17 +196,17 @@ class ground_truth():
 
 class PACSBO():
     def __init__(self, delta_confidence, noise_std, tuple_ik, X_plot, X_sample,
-                Y_sample, iteration, safety_threshold, exploration_threshold, gt, lengthscale_spatio,
+                Y_sample, iteration, safety_threshold, exploration_threshold, lengthscale_agent_spatio,
                 a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12,
                 output_variance_RBF, output_variance_Ma12, compute_all_sets=False):
         self.compute_all_sets = compute_all_sets
-        self.lengthscale_spatio = lengthscale_spatio
+        self.lengthscale_agent_spatio = lengthscale_agent_spatio
         self.a_parameter = a_parameter
         self.lengthscale_temporal_RBF = lengthscale_temporal_RBF
         self.lengthscale_temporal_Ma12 = lengthscale_temporal_Ma12
         self.output_variance_RBF = output_variance_RBF
         self.output_variance_Ma12 = output_variance_Ma12
-        self.gt = gt  # at least for toy experiments it works like this.
+        # self.gt = gt  # at least for toy experiments it works like this.
         self.exploration_threshold = exploration_threshold
         self.delta_confidence = delta_confidence
         self.X_plot = X_plot
@@ -228,7 +228,7 @@ class PACSBO():
 
     def compute_model(self, gpr):
         self.model = gpr(data_x=self.x_sample, train_y=self.y_sample, iteration=self.iteration,
-                          noise_std=self.noise_std, lengthscale_spatio=self.lengthscale_agent_spatio,
+                          noise_std=self.noise_std,
                           lengthscale_agent_spatio=self.lengthscale_agent_spatio, a_parameter=self.a_parameter, lengthscale_temporal_RBF=self.lengthscale_temporal_RBF,
                           lengthscale_temporal_Ma12=self.lengthscale_temporal_Ma12, output_variance_RBF=self.output_variance_RBF, output_variance_Ma12=self.output_variance_Ma12)
         self.kernel, self.spatio_kernel, self.temporal_kernel = gpr.return_kernels(self.model)
