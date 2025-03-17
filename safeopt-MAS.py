@@ -3,6 +3,8 @@ import sys
 import os
 import torch
 import warnings
+# warnings.filterwarnings("ignore")
+
 import numpy as np
 import gpytorch
 from tqdm import tqdm
@@ -11,6 +13,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial import ConvexHull
 import torch.multiprocessing as mp
 from torch.multiprocessing import Pool
+import dill
 
 np.random.seed(42)
 
@@ -53,7 +56,6 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
     compute_sets(cube)
 
     if cube.safety_threshold > -np.infty:
-        # warnings.warn('Implement random maximizer of uncertainty!')
         if sum(torch.logical_or(cube.M, cube.G)) != 0:
                 max_indices = torch.nonzero(cube.ucb[torch.logical_or(cube.M, cube.G)] == torch.max(cube.ucb[torch.logical_or(cube.M, cube.G)]), as_tuple=True)[0]
                 random_max_index = max_indices[torch.randint(len(max_indices), (1,))].item()
@@ -62,7 +64,7 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
             warnings.warn('No new input found. Returning last point of X_sample')
             x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))  # .unsqueeze(0)
     else:
-        if sum(cube.M) != 0:
+        if sum(cube.M) != 0:  # Why no G? Because there is no non-safe set. SafeOpt without safe set is GP-UCB
             # max_indices = torch.nonzero(cube.var[cube.M] == torch.max(cube.var[cube.M]), as_tuple=True)[0]
             max_indices = torch.nonzero(cube.ucb == torch.max(cube.ucb), as_tuple=True)[0]
             random_max_index = max_indices[torch.randint(len(max_indices), (1,))].item()
@@ -72,7 +74,6 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
             x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))
 
     return x_new, cube
-    
 
 
 def process_agent(j, agents_j, X_sample_full, Y_sample, t, hyperparameters):
@@ -87,13 +88,20 @@ def process_agent(j, agents_j, X_sample_full, Y_sample, t, hyperparameters):
         a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12,
         output_variance_RBF, output_variance_Ma12, safety_threshold
     )
-
+    cube_dict = {}
+    cube_dict['iteration'] = cube.iteration
+    cube_dict['mean'] = cube.mean
+    cube_dict['discr_domain'] = cube.discr_domain
+    cube_dict['x_sample'] = cube.x_sample
+    cube_dict['var'] = cube.var
+    cube_dict['y_sample'] = cube.y_sample
     x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)
     agents_j = [
         X_plot,
         communication_indices_list,
         x_new.detach(),  # Detach tensor
         x_new_neighbors.detach(),  # Detach tensor
+        cube_dict
     ]
     return j, agents_j
 
@@ -101,40 +109,41 @@ def process_agent(j, agents_j, X_sample_full, Y_sample, t, hyperparameters):
 if __name__ == '__main__':
     mp.set_start_method("spawn", force=True)  # Ensure safe multiprocessing with PyTorch
     # Generate ground truth
-    iterations = 15
+    iterations = 49
     num_agents = 4
     random_expert = False
     sequential_expert = True
     agents = {}
-    noise_std = 1e-1  # increase a little for numerical stability
-    RKHS_norm = 1
+    noise_std = 1e-2  # increase a little for numerical stability
     delta_confidence = 0.9
-    exploration_threshold = 0
+    exploration_threshold = 0.1
     dimension = num_agents
 
     '''
     Hyperparameters
     '''
-    lengthscale_agent_spatio = 5e6  # 0.5
+    RKHS_norm_spatio_temporal = 1  # 0.1
+    lengthscale_agent_spatio = 0.5  # 0.5
     a_parameter = 200  # weighting factor
-    lengthscale_temporal_RBF = 5e6
-    lengthscale_temporal_Ma12 = 5e6
-    output_variance_RBF = 1
-    output_variance_Ma12 = num_agents
+    lengthscale_temporal_RBF = 50  # 5
+    lengthscale_temporal_Ma12 = 50  # 1
+    output_variance_RBF = 0.1
+    output_variance_Ma12 = 0.1  # num_agents
 
     lengthscale_gt = num_agents/10
-    gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=RKHS_norm, lengthscale=lengthscale_gt)    
-    safety_threshold = torch.quantile(gt.fX, 0.001).item()
+    gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=1, lengthscale=lengthscale_gt)    
+    safety_threshold = torch.quantile(gt.fX, 0.1).item()  # -np.infty  # 
     print(f'The heuristic maximum of the function is {max(gt.fX)} and located at {gt.X_center[torch.argmax(gt.fX)]}.')
     print(f'The safety threshold is {safety_threshold}.')
 
-    hyperparameters = [noise_std, delta_confidence, exploration_threshold, RKHS_norm, lengthscale_agent_spatio,
+    hyperparameters = [noise_std, delta_confidence, exploration_threshold, RKHS_norm_spatio_temporal, lengthscale_agent_spatio,
                     a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, 
                     output_variance_Ma12, safety_threshold]
 
     # Finding initial safe sample
     while True:
         X_sample_full = torch.rand(dimension).unsqueeze(0)  # just start here
+        X_sample_full = gt.X_center[torch.argmax(gt.fX)].unsqueeze(0)  # start with highest point
         Y_sample = torch.tensor(gt.f(X_sample_full), dtype=torch.float32)
         if Y_sample > safety_threshold:
             break
@@ -180,6 +189,9 @@ if __name__ == '__main__':
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
     print('Hello')
+    with open('agents.pickle', 'wb') as handle:
+        dill.dump(agents, handle)
+
 
     # Development of reward
     plot_reward(range(len(Y_sample)), Y_sample, safety_threshold, gt)
@@ -190,80 +202,26 @@ if __name__ == '__main__':
     X_iteration_full = torch.cat((X_sample_full, cube.iteration_x), dim=1)
     K_total = cube.model.kernel(X_iteration_full, X_iteration_full).to_dense()
     # Agents 0 and 3 Mean and UCB
-    plot_2D_mean(cube=agents[0][-1], agent_number=0)
-    plot_2D_mean(cube=agents[3][-1], agent_number=3)
-    plot_2D_UCB(cube=agents[0][-1], agent_number=0)
-    plot_2D_UCB(cube=agents[3][-1], agent_number=3)
+    plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
+    plot_2D_mean(cube_dict=agents[3][-1], agent_number=3)
+    plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)
+    plot_2D_UCB(cube_dict=agents[3][-1], agent_number=3)
 
     # Agents 1 and 2 3D explored domain
-    plot_3D_sampled_space(cube=agents[1][-1], agent_number=1)
-    plot_3D_sampled_space(cube=agents[2][-1], agent_number=2)
+    plot_3D_sampled_space(cube_dict=agents[1][-1], agent_number=1)
+    plot_3D_sampled_space(cube_dict=agents[2][-1], agent_number=2)
 
     # All agents 1D explored domain
-    plot_1D_sampled_space(cube=agents[0][-1], agent_number=0)
-    plot_1D_sampled_space(cube=agents[1][-1], agent_number=1)
-    plot_1D_sampled_space(cube=agents[2][-1], agent_number=2)
-    plot_1D_sampled_space(cube=agents[3][-1], agent_number=3)
+    plot_1D_sampled_space(cube_dict=agents[0][-1], agent_number=0)
+    plot_1D_sampled_space(cube_dict=agents[1][-1], agent_number=1)
+    plot_1D_sampled_space(cube_dict=agents[2][-1], agent_number=2)
+    plot_1D_sampled_space(cube_dict=agents[3][-1], agent_number=3)
 
     # How much did we explore? Convex hull volume
     hull = ConvexHull(X_sample_full.numpy())
     print(f'We explored about {hull.volume*100}% of the domain.')
 
-    list_Y = []
-    kernel = gpytorch.kernels.MaternKernel(nu=1.5)
-    kernel.lengthscale = 10
-    # kernel=cube.model.kernel_temporal
-    for _ in range(20):
-        # Y_c = generating_kernel_paths(, RKHS_norm=1)
-        Y_c = generating_kernel_paths(kernel=kernel, RKHS_norm=1)
-        list_Y.append(Y_c)
-    plt.figure()
-    for Y_c in list_Y:
-        plt.plot(range(1, 50), Y_c.detach().numpy(), color='magenta', alpha=0.2)
-    plt.xlabel('Iterations $t$')
-    plt.ylabel('$y$')
-    plt.title('Sample paths of RKHS of RadialTemporalKernel')
-    # plt.savefig('Matern12kernel_ell_10.png')
 
-
-    # Plot the kernel
-    # Plot the 1D (radial) and 2D for all kernels
-    kernel = gpytorch.kernels.MaternKernel(nu=1.5)
-    kernel.lengthscale = 1
-    X_c = torch.arange(1, 50).float()
-    K = kernel(X_c, X_c).to_dense()
-    plt.plot(X_c, K[0, :].detach().numpy())
-    plt.xlabel('$\|t-t^\prime\|_2$')
-    plt.ylabel('$k(\|t-t^\prime\|_2$')
-    plt.title('Matern12 kernel ($\ell=1$)')
-
-    kernel=cube.model.kernel_temporal
-    K = kernel(X_iteration_full).to_dense()  # careful here; do we really need all of this? It depends. If we call the kernel from the model, we might need this because of the active dims
-    # We just define the class here new and then we have the kernel
-    kernel = RadialTemporalKernel()
-    K = kernel(X_c, X_c).to_dense()
-    plt.figure()
-    plt.plot(X_c, K[0, :].detach().numpy())
-    plt.xlabel('$\|t-t^\prime\|_2$')
-    plt.ylabel('$k(\|t-t^\prime\|_2$')
-    plt.title('RadialTemporalKernel')
-
-
-    # 2D plots
-    X_c = torch.arange(1, 50).float()
-    X_c1, X_c2 = torch.meshgrid(X_c, X_c)
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    
-    # Plot the surface
-    surf = ax.plot_surface(X_c1, X_c2, K, cmap='viridis', edgecolor='none')
-    cbar = fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
-    cbar.set_label('Z value')
-    ax.set_xlabel('$t_1$')
-    ax.set_ylabel('$t_2$')
-    ax.set_zlabel('$k(t_1,t_2)$')
-    ax.set_title('RadialTemporalKernel')
-    plt.savefig('Radialtemporalkernel_2D.png')
 
 
 

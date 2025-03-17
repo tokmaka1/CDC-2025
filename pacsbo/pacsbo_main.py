@@ -88,7 +88,7 @@ class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build 
         self.kernel_spatio = gpytorch.kernels.MaternKernel(nu=2.5, active_dims=range(train_x.shape[1]-1))
         # self.kernel_temporal = gpytorch.kernels.rbf_kernel.RBFKernel(active_dims=[train_x.shape[1]-1])
         # self.kernel_temporal = gpytorch.kernels.MaternKernel(nu=1.5)  # corresponding to Ohrnstein-Uhlenbeck process   
-        self.kernel_temporal = Matern12_RBF_WeightedSumKernel(active_dims=[train_x.shape[1]-1], a_parameter=a_parameter, lengthscale_temporal_RBF=lengthscale_temporal_RBF,
+        self.kernel_temporal = Matern12_RBF_WeightedSumKernel(active_dims=[train_x.shape[1]-1], lengthscale_temporal_RBF=lengthscale_temporal_RBF,
                                                               lengthscale_temporal_Ma12=lengthscale_temporal_Ma12, output_variance_RBF=output_variance_RBF,
                                                               output_variance_Ma12=output_variance_Ma12)
         self.kernel_spatio.lengthscale = lengthscale_agent_spatio

@@ -2,11 +2,12 @@ import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-from custom_kernels import Matern12_RBF_WeightedSumKernel
+from custom_kernels import Matern12_RBF_WeightedSumKernel, MyPeriodicKernel, MyPolynomialKernel
 import gpytorch
 from pacsbo.pacsbo_main import compute_X_plot
 import random
 import matplotlib.colors as mcolors
+import tikzplotlib
 
 
 
@@ -27,7 +28,7 @@ def generating_kernel_paths(kernel, RKHS_norm, iterations_begin, iterations_end,
 
 
 if __name__ == '__main__':
-    kernel = Matern12_RBF_WeightedSumKernel(active_dims=None, a_parameter=200, lengthscale_temporal_RBF=5, lengthscale_temporal_Ma12=1, output_variance_RBF=1, output_variance_Ma12=5)
+    kernel = Matern12_RBF_WeightedSumKernel(active_dims=None, lengthscale_temporal_RBF=5, lengthscale_temporal_Ma12=0.5, output_variance_RBF=1, output_variance_Ma12=1)
     list_Y = []
     iterations_begin = 1
     iterations_end = 50
@@ -45,17 +46,51 @@ if __name__ == '__main__':
     plt.xlabel('Iterations $t$')
     plt.xticks(ticks=[0, 200, 400, 600, 800, 1000], labels=[1, 10, 20, 30, 40, 50])
     plt.ylabel('$f(x)$')
-    plt.title('Sample paths combined RBF and Matern12 kernel')
 
     # Plot kernel
-    weight = kernel.a_kernel(X_plot, X_plot).to_dense()
-    T, T_prime = torch.meshgrid(X_plot, X_plot)
+    # K = kernel(X_plot, X_plot).to_dense()
+    # L = torch.linalg.cholesky(K)
+    # a, b = torch.linalg.eigh(K)
+    # plt.figure()
+    # plt.plot(range(len(a)), a.detach().numpy())
+
+
+    # weight = kernel.a_kernel(X_plot, X_plot).to_dense()
+    # T, T_prime = torch.meshgrid(X_plot, X_plot)
+    # plt.figure()
+    # plt.contourf(T, T_prime, weight, levels=100, cmap='viridis')
+    # plt.colorbar()
+    # plt.xticks([])
+    # plt.yticks([])
+    # plt.xlabel('')
+    # plt.ylabel('')
+    # plt.title('')
+    K = kernel.bm_kernel(X_plot, X_plot).to_dense()
+    I = torch.eye(len(K))*1e-4
+
+    L = torch.linalg.cholesky(K+I)  # heuristic check for positive definiteness
+    a, b = torch.linalg.eigh(K+I)
     plt.figure()
-    plt.contourf(T, T_prime, weight, levels=50, cmap='viridis')
-    plt.colorbar(label='$a$')
-    plt.xlabel('$t$')
-    plt.ylabel('$t^\prime$')
-    plt.title('Weighting for kernels')
+    T, T_prime = torch.meshgrid(X_plot, X_plot)
+    plt.contourf(T, T_prime, K, levels=50, cmap='viridis')
+    plt.colorbar()
+    # plt.xlabel('$t$')
+    # plt.ylabel('$t^\prime$')
+    plt.xticks([])
+    plt.yticks([])
+    plt.xlabel('')
+    plt.ylabel('')
+    plt.title('')
+    plt.savefig('bm_kernel_frac_50.pdf', dpi=1000, bbox_inches='tight', pad_inches=0)
+
+
+
+    # plt.savefig('weight_a.pdf', dpi=1000, bbox_inches='tight', pad_inches=0)
+
+    # 
+    # plt.xlabel('$t$')
+    # plt.ylabel('$t^\prime$')
+    # plt.title('Weighting for kernels')
 
     weight = kernel.a_neg_kernel(X_plot, X_plot).to_dense()
     T, T_prime = torch.meshgrid(X_plot, X_plot)

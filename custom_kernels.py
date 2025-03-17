@@ -30,97 +30,99 @@ class RadialTemporalKernel(Kernel):
             return NonLazyTensor(kernel_matrix)
 
 
-class A_Kernel(gpytorch.kernels.Kernel):
-    """
-    Custom kernel where a(t, t') = 1 - exp(-min(t, t') / 200)
-    """
-    # has_lengthscale = False  # This kernel does not have a trainable lengthscale
-    def __init__(self, a_parameter=200, **kwargs):
-        super().__init__(**kwargs)  # Ensure Kernel base class is initialized
-        self.a_parameter = a_parameter
+class MyPeriodicKernel(gpytorch.kernels.Kernel):
+    def __init__(self, lengthscale=1.0, period=1.0, **kwargs):
+        super().__init__(**kwargs)
+        self.ell = lengthscale
+        self.period = period
 
-    def forward(self, x1, x2, **params):
-        """ Compute the lazy kernel matrix for `a(t, t')` """
-        t1 = x1[..., -1]  # Extract time components
-        t2 = x2[..., -1]
-
-        # Compute a(t, t')
-        a_matrix = 1 - torch.exp(
-            (-
-             (torch.minimum(t1.unsqueeze(1), t2.unsqueeze(0))-25)**2
-             /self.a_parameter
-             )
-            )
-        warnings.warn('Correct unsqueezing?')
-
-        # Return as a LazyTensor for memory efficiency
-        return gpytorch.lazy.NonLazyTensor(a_matrix)
+    def forward(self, t1, t2, **params):
+        sine_squared = torch.sin(torch.pi * torch.abs(t1 - t2.T) / self.period)**2
+        # Compute the kernel matrix
+        periodic_kernel = torch.exp(-2*sine_squared/(2*self.ell**2))
+        return gpytorch.lazy.NonLazyTensor(periodic_kernel)
 
 
-class A_Neg_Kernel(gpytorch.kernels.Kernel):
-    """
-    Custom kernel where a_neg(t, t') = exp(-min(t, t') / 200)
-    """
-    # has_lengthscale = False
-    def __init__(self, a_parameter=200, **kwargs):
-        super().__init__(**kwargs)  # Ensure Kernel base class is initialized
-        self.a_parameter = a_parameter
+class MyRQKernel(gpytorch.kernels.Kernel):
+    def __init__(self, lengthscale=25.0, alpha=2.0, **kwargs):
+        super().__init__(**kwargs)
+        self.ell = lengthscale
+        self.alpha = alpha
 
-    def forward(self, x1, x2, **params):
-        """ Compute the lazy kernel matrix for `a_neg(t, t')` """
-        t1 = x1[..., -1]  # Extract time components
-        t2 = x2[..., -1]
+    def forward(self, t1, t2, **params):
+        # Compute the kernel matrix
+        value = (1 + torch.abs(t1-t2.T)/(2*self.alpha*self.ell**2))  ** (-self.alpha)
+        return gpytorch.lazy.NonLazyTensor(value)
 
-        # Compute a_neg(t, t')
-        a_neg_matrix = torch.exp(
-            (-
-             (torch.minimum(t1.unsqueeze(1), t2.unsqueeze(0))-25)**2
-             /self.a_parameter
-             )
-            )
 
-        # Return as a LazyTensor
-        return gpytorch.lazy.NonLazyTensor(a_neg_matrix)
+class MyPolynomialKernel(gpytorch.kernels.Kernel):
+    def __init__(self, d=2.0, c=1.0, **kwargs):
+        super().__init__(**kwargs)
+        self.d = d
+        self.c = c
+
+    def forward(self, t1, t2, **params):
+        K = (t1 - self.c) @ (t2.T - self.c)
+        return gpytorch.lazy.NonLazyTensor(K)
+    
+
+class BrowianMotionKernel(gpytorch.kernels.Kernel):
+    def __init__(self, active_dims, **kwargs):
+        super().__init__(active_dims=active_dims, **kwargs)
+
+    def forward(self, t1, t2, **params):
+        K = torch.minimum(t1, t2.T)/50
+        return gpytorch.lazy.NonLazyTensor(K)
+
+class CustomBrowianMotionKernel(gpytorch.kernels.Kernel):
+    def __init__(self, active_dims, **kwargs):
+        super().__init__(active_dims=active_dims, **kwargs)
+
+    def forward(self, t1, t2, **params):
+        K = torch.minimum(50-t1, 50-t2.T)/50
+        return gpytorch.lazy.NonLazyTensor(K)
 
 
 class Matern12_RBF_WeightedSumKernel(gpytorch.kernels.Kernel):
     is_stationary = False  # Since 'a' is input-dependent, the kernel is non-stationary
 
-    def __init__(self, active_dims, a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, output_variance_Ma12, **kwargs):
+    def __init__(self, active_dims, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, output_variance_Ma12, **kwargs):
         super().__init__(**kwargs)
-        self.a_parameter = a_parameter
         self.rbf = gpytorch.kernels.ScaleKernel(
             gpytorch.kernels.RBFKernel(active_dims=active_dims)#,
             # outputscale=output_variance_RBF
         )
         self.rbf.base_kernel.lengthscale = lengthscale_temporal_RBF
         self.rbf.outputscale = output_variance_RBF  # Ensure this is correctly set
+        self.rbf.base_kernel.raw_lengthscale.requires_grad = False
+        self.rbf.raw_outputscale.requires_grad = False
 
         self.matern12 = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.MaternKernel(active_dims=active_dims),
+            gpytorch.kernels.MaternKernel(nu=1/2, active_dims=active_dims),
         )
         self.matern12.base_kernel.lengthscale = lengthscale_temporal_Ma12
         self.matern12.outputscale = output_variance_Ma12
-        self.a_kernel = A_Kernel(a_parameter)
-        self.a_neg_kernel = A_Neg_Kernel(a_parameter)
+        self.matern12.base_kernel.raw_lengthscale.requires_grad = False
+        self.matern12.raw_outputscale.requires_grad = False
 
-        self.RBF_part = gpytorch.kernels.ProductKernel(self.rbf, self.a_kernel)
-        self.Ma12_part = gpytorch.kernels.ProductKernel(self.matern12, self.a_neg_kernel)
-        self.temporal_kernel = self.RBF_part + self.Ma12_part
+        # self.a_kernel = A_Kernel(a_parameter)
+        # self.a_neg_kernel = (a_parameter)
+        # self.periodic_kernel = MyPeriodicKernel(period=30, lengthscale=0.5)
+        # self.rq_kernel = MyRQKernel(lengthscale=25.0, alpha=2.0)
+        self.bm_kernel = BrowianMotionKernel(active_dims=active_dims)
+        self.cbm_kernel = CustomBrowianMotionKernel(active_dims=active_dims)
+
+        self.bm_cbm_product = gpytorch.kernels.ProductKernel(self.cbm_kernel, self.bm_kernel)
+        # self.RBF_part = gpytorch.kernels.ProductKernel(self.rbf, self.periodic_kernel)
+        self.RBF_part = self.rbf  # gpytorch.kernels.ProductKernel(self.rbf, self.cbm_kernel)
+        self.Ma12_part = gpytorch.kernels.ProductKernel(self.matern12, self.bm_kernel)
+        self.Ma12_part = gpytorch.kernels.ProductKernel(self.Ma12_part, self.cbm_kernel)
+        # self.temporal_kernel = self.RBF_part + self.Ma12_part
+        # self.temporal_kernel = self.RBF_part + self.Ma12_part
+        self.temporal_kernel = self.Ma12_part + self.Ma12_part  # +
 
     def forward(self, x1, x2, **params):
-        return self.temporal_kernel(x1, x2)
-
-
-def Matern12_RBF_weighted_sum(t, t_prime, ell_1, ell_2):  # Now the 
-    T, T_prime = torch.meshgrid(t, t_prime)  # T is constant row, T_prime is constant column
-    # nu = f(t)... Is that possible?
-    # Let us have $\ell=5$ for all.
-    RBF = torch.exp(-torch.abs(T-T_prime)**2/ell_1)
-    Ma12 = 2*torch.exp(-torch.abs(T-T_prime)/ell_2)
-    # a should be RBF but on its head
-    a = 1 - torch.exp(-(torch.minimum(T, T_prime)-25)**2/200) # just a quite flat Gaussian as weight function
-    return a*RBF + (1-a)*Ma12, a   #    # beginning, a  # 
+        return self.temporal_kernel(x1, x2)  # self.temporal_kernel(x1, x2)
 
 
 if __name__ == '__main__':
