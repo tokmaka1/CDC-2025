@@ -74,7 +74,7 @@ class BrowianMotionKernel(gpytorch.kernels.Kernel):
         K = torch.minimum(t1, t2.T)/50
         return gpytorch.lazy.NonLazyTensor(K)
 
-class CustomBrowianMotionKernel(gpytorch.kernels.Kernel):
+class ReverseBrownianMotionKernel(gpytorch.kernels.Kernel):
     def __init__(self, active_dims, **kwargs):
         super().__init__(active_dims=active_dims, **kwargs)
 
@@ -110,16 +110,16 @@ class Matern12_RBF_WeightedSumKernel(gpytorch.kernels.Kernel):
         # self.periodic_kernel = MyPeriodicKernel(period=30, lengthscale=0.5)
         # self.rq_kernel = MyRQKernel(lengthscale=25.0, alpha=2.0)
         self.bm_kernel = BrowianMotionKernel(active_dims=active_dims)
-        self.cbm_kernel = CustomBrowianMotionKernel(active_dims=active_dims)
+        self.rbm_kernel = ReverseBrownianMotionKernel(active_dims=active_dims)
 
-        self.bm_cbm_product = gpytorch.kernels.ProductKernel(self.cbm_kernel, self.bm_kernel)
-        # self.RBF_part = gpytorch.kernels.ProductKernel(self.rbf, self.periodic_kernel)
-        self.RBF_part = self.rbf  # gpytorch.kernels.ProductKernel(self.rbf, self.cbm_kernel)
-        self.Ma12_part = gpytorch.kernels.ProductKernel(self.matern12, self.bm_kernel)
-        self.Ma12_part = gpytorch.kernels.ProductKernel(self.Ma12_part, self.cbm_kernel)
+        self.bm_rbm_product = gpytorch.kernels.ProductKernel(self.rbm_kernel, self.bm_kernel)
+        self.RBF_part = self.rbf
+        # self.Ma12_part = gpytorch.kernels.ProductKernel(self.matern12, self.bm_kernel)
+        self.Ma12_part = gpytorch.kernels.ProductKernel(self.matern12, self.bm_rbm_product)
         # self.temporal_kernel = self.RBF_part + self.Ma12_part
         # self.temporal_kernel = self.RBF_part + self.Ma12_part
-        self.temporal_kernel = self.Ma12_part + self.Ma12_part  # +
+        temporal_kernel = self.RBF_part + self.Ma12_part
+        self.temporal_kernel = temporal_kernel
 
     def forward(self, x1, x2, **params):
         return self.temporal_kernel(x1, x2)  # self.temporal_kernel(x1, x2)

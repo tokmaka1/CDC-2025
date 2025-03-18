@@ -85,7 +85,7 @@ class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build 
         train_x = data_x
         super(GPRegressionModel, self).__init__(train_x, train_y, likelihood)  # also put iteration here!
         self.mean_module = gpytorch.means.ConstantMean()
-        self.kernel_spatio = gpytorch.kernels.MaternKernel(nu=2.5, active_dims=range(train_x.shape[1]-1))
+        self.kernel_spatio = gpytorch.kernels.MaternKernel(nu=2.5, active_dims=[i for i in range(train_x.shape[1]-1)])
         # self.kernel_temporal = gpytorch.kernels.rbf_kernel.RBFKernel(active_dims=[train_x.shape[1]-1])
         # self.kernel_temporal = gpytorch.kernels.MaternKernel(nu=1.5)  # corresponding to Ohrnstein-Uhlenbeck process   
         self.kernel_temporal = Matern12_RBF_WeightedSumKernel(active_dims=[train_x.shape[1]-1], lengthscale_temporal_RBF=lengthscale_temporal_RBF,
@@ -239,8 +239,10 @@ class PACSBO():
         self.f_preds = self.model(self.discr_domain)  # the X value will also be somehow hidden inside this f_preds
         self.mean = self.f_preds.mean
         # print(max(abs(self.mean)))
-        warnings.warn('Different way of variance prediction')
-        self.var = self.f_preds.covariance_matrix.diagonal()  # self.f_preds.variance
+        # warnings.warn('Different way of variance prediction')
+        self.var = self.f_preds.lazy_covariance_matrix.evaluate_kernel().diag()
+        # self.var = self.f_preds.variance  
+        # self.var = self.f_preds.covariance_matrix.diagonal()
 
     def compute_confidence_intervals_training(self, dict_local_RKHS_norms={}):
         if self.tuple in dict_local_RKHS_norms:
@@ -275,6 +277,19 @@ class PACSBO():
         self.max_M_var = 0  # initialize
         if not torch.any(self.S):  # no safe points
             return
+        '''
+        plt.figure()
+        plt.scatter(
+            self.discr_domain[:, 0].detach().numpy(),
+            self.discr_domain[:, 1].detach().numpy(),
+            c=self.lcb.detach().numpy(),  # Color represents lcb values
+            cmap="viridis",  # You can change the colormap if needed
+            edgecolors="k",
+        )
+        plt.colorbar(label="lcb values")  # Adds a color scale
+        plt.scatter(self.x_sample[:, 0].detach().numpy(), self.x_sample[:, 1].detach().numpy())      
+        '''
+
         self.best_lower_bound_local = max(self.lcb[self.S])
         self.M[self.S] = self.ucb[self.S] >= max(best_lower_bound_others, self.best_lower_bound_local)
         self.M[self.M.clone()] = (self.ucb[self.M] - self.lcb[self.M]) > self.exploration_threshold

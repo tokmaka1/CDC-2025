@@ -15,10 +15,10 @@ import torch.multiprocessing as mp
 from torch.multiprocessing import Pool
 import dill
 
-np.random.seed(42)
+np.random.seed(41)
 
 # Fix seed for PyTorch (CPU)
-torch.manual_seed(42)
+torch.manual_seed(41)
 
 
 # Add the relative path to the system path
@@ -61,7 +61,7 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
                 random_max_index = max_indices[torch.randint(len(max_indices), (1,))].item()
                 x_new = cube.discr_domain[random_max_index, :]
         else:
-            warnings.warn('No new input found. Returning last point of X_sample')
+            # warnings.warn('No new input found. Returning last point of X_sample')
             x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))  # .unsqueeze(0)
     else:
         if sum(cube.M) != 0:  # Why no G? Because there is no non-safe set. SafeOpt without safe set is GP-UCB
@@ -70,7 +70,7 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
             random_max_index = max_indices[torch.randint(len(max_indices), (1,))].item()
             x_new = cube.discr_domain[random_max_index, :]
         else:
-            warnings.warn('No new input found. Returning last point of X_sample')
+            # warnings.warn('No new input found. Returning last point of X_sample')
             x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))
 
     return x_new, cube
@@ -91,10 +91,11 @@ def process_agent(j, agents_j, X_sample_full, Y_sample, t, hyperparameters):
     cube_dict = {}
     cube_dict['iteration'] = cube.iteration
     cube_dict['mean'] = cube.mean
-    cube_dict['discr_domain'] = cube.discr_domain
+    # cube_dict['discr_domain'] = cube.discr_domain
     cube_dict['x_sample'] = cube.x_sample
-    cube_dict['var'] = cube.var
+    cube_dict['var'] = cube.var  # maybe also not necessary, let's see
     cube_dict['y_sample'] = cube.y_sample
+    cube_dict['safety_threshold'] = safety_threshold
     x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)
     agents_j = [
         X_plot,
@@ -109,26 +110,26 @@ def process_agent(j, agents_j, X_sample_full, Y_sample, t, hyperparameters):
 if __name__ == '__main__':
     mp.set_start_method("spawn", force=True)  # Ensure safe multiprocessing with PyTorch
     # Generate ground truth
-    iterations = 49
+    iterations = 50
     num_agents = 4
     random_expert = False
     sequential_expert = True
     agents = {}
     noise_std = 1e-2  # increase a little for numerical stability
     delta_confidence = 0.9
-    exploration_threshold = 0.1
+    exploration_threshold = 0  # 0.1
     dimension = num_agents
 
     '''
     Hyperparameters
     '''
     RKHS_norm_spatio_temporal = 1  # 0.1
-    lengthscale_agent_spatio = 0.5  # 0.5
+    lengthscale_agent_spatio = 0.2  # 0.5
     a_parameter = 200  # weighting factor
-    lengthscale_temporal_RBF = 50  # 5
-    lengthscale_temporal_Ma12 = 50  # 1
-    output_variance_RBF = 0.1
-    output_variance_Ma12 = 0.1  # num_agents
+    lengthscale_temporal_RBF = 10  # 5
+    lengthscale_temporal_Ma12 = 2  # 1
+    output_variance_RBF = 0.1  # 0.5  # 0.5
+    output_variance_Ma12 = 0.1  # 2  # num_agents
 
     lengthscale_gt = num_agents/10
     gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=1, lengthscale=lengthscale_gt)    
@@ -139,11 +140,11 @@ if __name__ == '__main__':
     hyperparameters = [noise_std, delta_confidence, exploration_threshold, RKHS_norm_spatio_temporal, lengthscale_agent_spatio,
                     a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, 
                     output_variance_Ma12, safety_threshold]
-
+    agents['gt'] = gt
     # Finding initial safe sample
     while True:
         X_sample_full = torch.rand(dimension).unsqueeze(0)  # just start here
-        X_sample_full = gt.X_center[torch.argmax(gt.fX)].unsqueeze(0)  # start with highest point
+        # X_sample_full = gt.X_center[torch.argmax(gt.fX)].unsqueeze(0)  # start with highest point
         Y_sample = torch.tensor(gt.f(X_sample_full), dtype=torch.float32)
         if Y_sample > safety_threshold:
             break
@@ -182,9 +183,10 @@ if __name__ == '__main__':
                         x_new_full[:, jj] = agents[jj][2]  # get their x_new prediction
             else:
                 x_new_full = torch.cat([agents[j][2] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new ("1D ones")
-            if torch.any(torch.all(X_sample_full == x_new_full, dim=1)):
-                message = f'Same same same; {x_new_full}'
-                warnings.warn(message)
+            # if torch.any(torch.all(X_sample_full == x_new_full, dim=1)):
+                # message = f'Same same same; {x_new_full}'
+                # warnings.warn(message)
+            print(f'We are sampling {x_new_full}')
             y_new = torch.tensor(gt.f(x_new_full), dtype=torch.float32)  # this is the applied action!
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
@@ -194,14 +196,8 @@ if __name__ == '__main__':
 
 
     # Development of reward
-    plot_reward(range(len(Y_sample)), Y_sample, safety_threshold, gt)
+    plot_reward(cube=agents[0][-1])
 
-    warnings.warn("Beware the dimensions here!")
-    K_T = cube.model.kernel_temporal(cube.iteration_x.float(), cube.iteration_x.float()).to_dense()
-    K_S = cube.model.kernel_spatio(X_sample_full, X_sample_full).to_dense()
-    X_iteration_full = torch.cat((X_sample_full, cube.iteration_x), dim=1)
-    K_total = cube.model.kernel(X_iteration_full, X_iteration_full).to_dense()
-    # Agents 0 and 3 Mean and UCB
     plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
     plot_2D_mean(cube_dict=agents[3][-1], agent_number=3)
     plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)

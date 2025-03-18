@@ -1,15 +1,18 @@
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+from pacsbo.pacsbo_main import compute_X_plot
 
 
 def plot_2D_mean(cube_dict, agent_number, save=False):
     t = cube_dict['iteration'].item()
+    n_dimensions = 2 if agent_number==0 or agent_number==3 else 3  # only for 4 agents right now; fine
+    discr_domain = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))
     plt.figure()
     m = cube_dict['mean'].detach().numpy()
     sc = plt.scatter(
-        cube_dict['discr_domain'][:, 0],
-        cube_dict['discr_domain'][:, 1],
+        discr_domain[:, 0],
+        discr_domain[:, 1],
         c=m,
         cmap='plasma'
     )
@@ -26,11 +29,13 @@ def plot_2D_mean(cube_dict, agent_number, save=False):
 
 def plot_2D_UCB(cube_dict, agent_number, save=False):
     t = cube_dict['iteration'].item()
+    n_dimensions = 2 if agent_number==0 or agent_number==3 else 3  # only for 4 agents right now; fine
+    discr_domain = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))
     plt.figure()
     u = cube_dict['mean'].detach().numpy() + cube_dict['var'].detach().numpy()
     sc = plt.scatter(
-        cube_dict['discr_domain'][:, 0],
-        cube_dict['discr_domain'][:, 1],
+        discr_domain[:, 0],
+        discr_domain[:, 1],
         c=u,
         cmap='plasma'
     )
@@ -45,10 +50,13 @@ def plot_2D_UCB(cube_dict, agent_number, save=False):
         plt.savefig(f'ucb_value_agent_{agent_number}.png')
 
 
-def plot_reward(X_sample, Y_sample, safety_threshold, gt, save=False):
+def plot_reward(cube, save=False):
     plt.figure()
+    X_sample = cube['x_sample']
+    Y_sample = cube['y_sample']
+    safety_threshold = cube['safety_threshold']
     plt.plot(range(len(X_sample)), Y_sample.detach().numpy(), '-*', label='Samples')
-    plt.plot(range(len(X_sample)), torch.ones(len(X_sample))*max(gt.fX), '--g', label='Max')
+    # plt.plot(range(len(X_sample)), torch.ones(len(X_sample))*max(gt.fX), '--g', label='Max')
     if safety_threshold > -np.infty:
         plt.plot(range(len(X_sample)), torch.ones(len(X_sample))*safety_threshold, '--r', label='Safety threshold')
     plt.xlabel('Iterations')
