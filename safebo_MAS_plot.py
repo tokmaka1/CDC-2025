@@ -6,7 +6,7 @@ from pacsbo.pacsbo_main import compute_X_plot
 
 def plot_2D_mean(cube_dict, agent_number, save=False):
     t = cube_dict['iteration'].item()
-    n_dimensions = 2 if agent_number==0 or agent_number==3 else 3  # only for 4 agents right now; fine
+    n_dimensions = 2 if agent_number==0 or agent_number==7 else 3  # only for 4 agents right now; fine
     discr_domain = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))
     plt.figure()
     m = cube_dict['mean'].detach().numpy()
@@ -93,6 +93,7 @@ def plot_1D_sampled_space(cube_dict, agent_number, save=False):
     plt.xlabel(f'Parameter $a$ of Agent {agent_number}')
     plt.ylabel('Corresponding $y$ value')
     plt.title(f'1D explored domain Agent {agent_number}')
+    plt.xlim([-0.1, 1.1])
     if not save:
         plt.show()
     else:

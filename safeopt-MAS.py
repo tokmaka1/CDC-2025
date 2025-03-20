@@ -15,10 +15,12 @@ import torch.multiprocessing as mp
 from torch.multiprocessing import Pool
 import dill
 
-np.random.seed(41)
+random_seed_number = 108  # problem with 42 in 8D setting?
+
+np.random.seed(random_seed_number)  # Problem with 42?
 
 # Fix seed for PyTorch (CPU)
-torch.manual_seed(41)
+torch.manual_seed(random_seed_number)
 
 
 # Add the relative path to the system path
@@ -59,7 +61,7 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
         if sum(torch.logical_or(cube.M, cube.G)) != 0:
                 max_indices = torch.nonzero(cube.ucb[torch.logical_or(cube.M, cube.G)] == torch.max(cube.ucb[torch.logical_or(cube.M, cube.G)]), as_tuple=True)[0]
                 random_max_index = max_indices[torch.randint(len(max_indices), (1,))].item()
-                x_new = cube.discr_domain[random_max_index, :]
+                x_new = cube.discr_domain[torch.logical_or(cube.M, cube.G)][random_max_index, :]
         else:
             # warnings.warn('No new input found. Returning last point of X_sample')
             x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))  # .unsqueeze(0)
@@ -68,7 +70,7 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
             # max_indices = torch.nonzero(cube.var[cube.M] == torch.max(cube.var[cube.M]), as_tuple=True)[0]
             max_indices = torch.nonzero(cube.ucb == torch.max(cube.ucb), as_tuple=True)[0]
             random_max_index = max_indices[torch.randint(len(max_indices), (1,))].item()
-            x_new = cube.discr_domain[random_max_index, :]
+            x_new = cube.discr_domain[cube.M][random_max_index, :]
         else:
             # warnings.warn('No new input found. Returning last point of X_sample')
             x_new = torch.cat((X_sample[-1], cube.iteration.flatten() + 1))
@@ -111,29 +113,33 @@ if __name__ == '__main__':
     mp.set_start_method("spawn", force=True)  # Ensure safe multiprocessing with PyTorch
     # Generate ground truth
     iterations = 50
-    num_agents = 4
+    num_agents = 8
     random_expert = False
     sequential_expert = True
     agents = {}
     noise_std = 1e-2  # increase a little for numerical stability
     delta_confidence = 0.9
-    exploration_threshold = 0  # 0.1
+    exploration_threshold = 0.1
     dimension = num_agents
+    initial_point_quantile = 0.7
+    safety_quantile = 0.2
 
     '''
     Hyperparameters
     '''
     RKHS_norm_spatio_temporal = 1  # 0.1
-    lengthscale_agent_spatio = 0.2  # 0.5
-    a_parameter = 200  # weighting factor
-    lengthscale_temporal_RBF = 10  # 5
-    lengthscale_temporal_Ma12 = 2  # 1
-    output_variance_RBF = 0.1  # 0.5  # 0.5
-    output_variance_Ma12 = 0.1  # 2  # num_agents
+    lengthscale_agent_spatio = 0.3  # 0.5
+    a_parameter = 50  # weighting factor for the brownian motion and reverse brownian motion kernel
+    lengthscale_temporal_RBF = 20  # 20  # 5
+    lengthscale_temporal_Ma12 = 5  # 5  # 1
+    # Changing length scales did not directly influence stuff
+    output_variance_RBF = 0.1  # 0.1 0.5  # 0.5
+    output_variance_Ma12 = 0.1  # 0.1 2  # num_agents
+    # Changing the output variance does influence stuff a lot
 
     lengthscale_gt = num_agents/10
     gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=1, lengthscale=lengthscale_gt)    
-    safety_threshold = torch.quantile(gt.fX, 0.1).item()  # -np.infty  # 
+    safety_threshold = torch.quantile(gt.fX, safety_quantile).item()  # -np.infty  # 
     print(f'The heuristic maximum of the function is {max(gt.fX)} and located at {gt.X_center[torch.argmax(gt.fX)]}.')
     print(f'The safety threshold is {safety_threshold}.')
 
@@ -146,7 +152,7 @@ if __name__ == '__main__':
         X_sample_full = torch.rand(dimension).unsqueeze(0)  # just start here
         # X_sample_full = gt.X_center[torch.argmax(gt.fX)].unsqueeze(0)  # start with highest point
         Y_sample = torch.tensor(gt.f(X_sample_full), dtype=torch.float32)
-        if Y_sample > safety_threshold:
+        if Y_sample > torch.quantile(gt.fX, initial_point_quantile).item():  #  safety_threshold:
             break
 
     for j in range(num_agents):  # set-up agents
@@ -191,7 +197,7 @@ if __name__ == '__main__':
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
     print('Hello')
-    with open('agents.pickle', 'wb') as handle:
+    with open('agents_8_50_108.pickle', 'wb') as handle:
         dill.dump(agents, handle)
 
 
@@ -199,19 +205,15 @@ if __name__ == '__main__':
     plot_reward(cube=agents[0][-1])
 
     plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
-    plot_2D_mean(cube_dict=agents[3][-1], agent_number=3)
-    plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)
-    plot_2D_UCB(cube_dict=agents[3][-1], agent_number=3)
+    plot_2D_mean(cube_dict=agents[num_agents-1][-1], agent_number=num_agents-1)
 
     # Agents 1 and 2 3D explored domain
-    plot_3D_sampled_space(cube_dict=agents[1][-1], agent_number=1)
-    plot_3D_sampled_space(cube_dict=agents[2][-1], agent_number=2)
+    for j in range(1, num_agents-1):  # not the first, not the last
+        plot_3D_sampled_space(cube_dict=agents[j][-1], agent_number=j)
 
     # All agents 1D explored domain
-    plot_1D_sampled_space(cube_dict=agents[0][-1], agent_number=0)
-    plot_1D_sampled_space(cube_dict=agents[1][-1], agent_number=1)
-    plot_1D_sampled_space(cube_dict=agents[2][-1], agent_number=2)
-    plot_1D_sampled_space(cube_dict=agents[3][-1], agent_number=3)
+    for j in range(1, num_agents-1):
+        plot_1D_sampled_space(cube_dict=agents[j][-1], agent_number=j)
 
     # How much did we explore? Convex hull volume
     hull = ConvexHull(X_sample_full.numpy())

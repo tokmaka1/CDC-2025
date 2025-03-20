@@ -22,7 +22,7 @@ from scipy.special import comb
 import gym
 import sys
 import os
-from custom_kernels import RadialTemporalKernel, Matern12_RBF_WeightedSumKernel
+from custom_kernels import Matern12_RBF_WeightedSumKernel
 # sys.path.insert(1,  './vision-based-furuta-pendulum-master')
 # from gym_brt.envs import QubeBalanceEnv, QubeSwingupEnv
 # from gym_brt.control.control import QubeHoldControl, QubeFlipUpControl
@@ -90,7 +90,7 @@ class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build 
         # self.kernel_temporal = gpytorch.kernels.MaternKernel(nu=1.5)  # corresponding to Ohrnstein-Uhlenbeck process   
         self.kernel_temporal = Matern12_RBF_WeightedSumKernel(active_dims=[train_x.shape[1]-1], lengthscale_temporal_RBF=lengthscale_temporal_RBF,
                                                               lengthscale_temporal_Ma12=lengthscale_temporal_Ma12, output_variance_RBF=output_variance_RBF,
-                                                              output_variance_Ma12=output_variance_Ma12)
+                                                              output_variance_Ma12=output_variance_Ma12, a_parameter=a_parameter)
         self.kernel_spatio.lengthscale = lengthscale_agent_spatio
         # Create product kernel
         self.kernel = gpytorch.kernels.ProductKernel(self.kernel_spatio, self.kernel_temporal)
@@ -241,7 +241,8 @@ class PACSBO():
         # print(max(abs(self.mean)))
         # warnings.warn('Different way of variance prediction')
         self.var = self.f_preds.lazy_covariance_matrix.evaluate_kernel().diag()
-        # self.var = self.f_preds.variance  
+        # self.var = self.f_preds.lazy_covariance_matrix.diag()
+        # self.var = self.f_preds.variance
         # self.var = self.f_preds.covariance_matrix.diagonal()
 
     def compute_confidence_intervals_training(self, dict_local_RKHS_norms={}):
@@ -274,6 +275,10 @@ class PACSBO():
 
     def maximizer_routine(self, best_lower_bound_others):
         self.M[:] = False  # initialize
+        if self.discr_domain.shape[1] == 3:
+            pass  # breakpoint()
+        elif self.discr_domain.shape[1] == 4:
+            pass  # breakpoint()
         self.max_M_var = 0  # initialize
         if not torch.any(self.S):  # no safe points
             return
@@ -288,6 +293,25 @@ class PACSBO():
         )
         plt.colorbar(label="lcb values")  # Adds a color scale
         plt.scatter(self.x_sample[:, 0].detach().numpy(), self.x_sample[:, 1].detach().numpy())      
+
+        plt.figure()
+        plt.scatter(
+            self.discr_domain[:, 0].detach().numpy(),
+            self.discr_domain[:, 1].detach().numpy(),
+            c='black', label='domain'
+        )
+        plt.scatter(
+            self.discr_domain[:, 0][self.S].detach().numpy(),
+            self.discr_domain[:, 1][self.S].detach().numpy(),
+            c='white', label='$S$'
+        )
+
+        plt.scatter(
+            self.discr_domain[:, 0][self.S].detach().numpy(),
+            self.discr_domain[:, 1][self.S].detach().numpy(),
+            c='magenta', label='$M$'
+        )
+
         '''
 
         self.best_lower_bound_local = max(self.lcb[self.S])
@@ -377,7 +401,6 @@ class PACSBO():
             dict_mean_RKHS_norms[self.tuple].append(RKHS_norm_mean_function)
             self.RKHS_norm_mean_function_list = dict_mean_RKHS_norms[self.tuple]
 
-            # TODO: check whether the discretization is correct like this, also with the nD case
             variance_integral = sum(self.var)/2*(self.n_dimensions/self.discr_domain.shape[0])
             dict_recip_variances[self.tuple].append(1/variance_integral)
             self.vi_frac_list = dict_recip_variances[self.tuple]
