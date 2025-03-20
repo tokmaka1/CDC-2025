@@ -2,11 +2,13 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 from pacsbo.pacsbo_main import compute_X_plot
+import tikzplotlib
+import dill
 
 
 def plot_2D_mean(cube_dict, agent_number, save=False):
     t = cube_dict['iteration'].item()
-    n_dimensions = 2 if agent_number==0 or agent_number==7 else 3  # only for 4 agents right now; fine
+    n_dimensions = 2  # if agent_number==0 or agent_number==7 else 3  # only for 4 agents right now; fine
     discr_domain = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))
     plt.figure()
     m = cube_dict['mean'].detach().numpy()
@@ -25,29 +27,32 @@ def plot_2D_mean(cube_dict, agent_number, save=False):
         plt.show()
     else:
         plt.savefig(f'mean_value_agent_{agent_number}.png')
+        tikzplotlib.save(f'mean_value_agent_{agent_number}.tex')
 
-
-def plot_2D_UCB(cube_dict, agent_number, save=False):
+def plot_2D_samples(cube_dict, agent_number, save=False):
     t = cube_dict['iteration'].item()
-    n_dimensions = 2 if agent_number==0 or agent_number==3 else 3  # only for 4 agents right now; fine
-    discr_domain = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))
+    x_sample = cube_dict['x_sample']
+    # discr_domain = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))
     plt.figure()
-    u = cube_dict['mean'].detach().numpy() + cube_dict['var'].detach().numpy()
+    m = cube_dict['y_sample'].detach().numpy()
     sc = plt.scatter(
-        discr_domain[:, 0],
-        discr_domain[:, 1],
-        c=u,
+        x_sample[:, 0],
+        x_sample[:, 1],
+        c=m,
         cmap='plasma'
     )
-    plt.colorbar(sc, label="UCB Value")  # Add a colorbar to show the mapping
-    plt.title(f'Iteration {t}; Agent {agent_number} UCB')
-    plt.scatter(cube_dict['x_sample'][:, 0], cube_dict['x_sample'][:, 1], label="Sampled Points", color='k')
+    plt.colorbar(sc, label="Sample")  # Add a colorbar to show the mapping
+    plt.title(f'Iteration {t}; Agent {agent_number} samples')
+    # plt.scatter(cube_dict['x_sample'][:, 0], cube_dict['x_sample'][:, 1], label="Sampled Points", color='k')
     plt.xlabel('$a_1$')
     plt.ylabel('$a_2$')
     if not save:
         plt.show()
     else:
-        plt.savefig(f'ucb_value_agent_{agent_number}.png')
+        plt.savefig(f'samples_2D_agent{agent_number}.png')
+        tikzplotlib.save(f'samples_2D_agent{agent_number}.tex')
+
+
 
 
 def plot_reward(cube, save=False):
@@ -58,7 +63,7 @@ def plot_reward(cube, save=False):
     plt.plot(range(len(X_sample)), Y_sample.detach().numpy(), '-*', label='Samples')
     # plt.plot(range(len(X_sample)), torch.ones(len(X_sample))*max(gt.fX), '--g', label='Max')
     if safety_threshold > -np.infty:
-        plt.plot(range(len(X_sample)), torch.ones(len(X_sample))*safety_threshold, '--r', label='Safety threshold')
+        plt.plot(range(len(X_sample)), torch.ones(len(X_sample))*safety_threshold, '-r', label='Safety threshold')
     plt.xlabel('Iterations')
     plt.ylabel('Reward')
     # plt.legend()
@@ -66,6 +71,7 @@ def plot_reward(cube, save=False):
         plt.show()
     else:
         plt.savefig('reward_development.png')
+        tikzplotlib.save('reward_development.tex')
 
 
 def plot_3D_sampled_space(cube_dict, agent_number, save=False):
@@ -82,6 +88,7 @@ def plot_3D_sampled_space(cube_dict, agent_number, save=False):
         plt.show()
     else:
         plt.savefig(f'3D_sampled_space_agent_{agent_number}.png')
+        # tikzplotlib.save(f'3D_sampled_space_agent_{agent_number}.tex')
 
 
 def plot_1D_sampled_space(cube_dict, agent_number, save=False):
@@ -98,3 +105,26 @@ def plot_1D_sampled_space(cube_dict, agent_number, save=False):
         plt.show()
     else:
         plt.savefig(f'1D_sampled_space_agent_{agent_number}.png')
+        # tikzplotlib.save(f'1D_sampled_space_agent_{agent_number}.tex')
+
+
+
+if __name__ == '__main__':
+    with open('agents_4_50_120.pickle', 'rb') as handle:
+        agents = dill.load(handle)
+    plot_reward(cube=agents[0][-1])
+
+    plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
+    plot_2D_mean(cube_dict=agents[7][-1], agent_number=7)
+
+    plot_2D_samples(cube_dict=agents[0][-1], agent_number=0)
+    plot_2D_samples(cube_dict=agents[7][-1], agent_number=7)
+
+
+    # Agents 1 and 2 3D explored domain
+    for j in range(1, 7):  # not the first, not the last
+        plot_3D_sampled_space(cube_dict=agents[j][-1], agent_number=j)
+
+    # All agents 1D explored domain
+    for j in range(1, 7):
+        plot_1D_sampled_space(cube_dict=agents[j][-1], agent_number=j)

@@ -15,7 +15,7 @@ import torch.multiprocessing as mp
 from torch.multiprocessing import Pool
 import dill
 
-random_seed_number = 108  # problem with 42 in 8D setting?
+random_seed_number = 120  # problem with 42 in 8D setting?
 
 np.random.seed(random_seed_number)  # Problem with 42?
 
@@ -31,7 +31,7 @@ os.chdir(script_dir)
 print("Changed working directory to:", os.getcwd())
 
 
-from safebo_MAS_plot import plot_2D_mean, plot_2D_UCB, plot_reward, plot_3D_sampled_space, plot_1D_sampled_space
+from safebo_MAS_plot import plot_2D_mean, plot_reward, plot_3D_sampled_space, plot_1D_sampled_space
 from pacsbo.pacsbo_main import compute_X_plot, ground_truth, initial_safe_samples, PACSBO, GPRegressionModel
 
 
@@ -121,7 +121,7 @@ if __name__ == '__main__':
     delta_confidence = 0.9
     exploration_threshold = 0.1
     dimension = num_agents
-    initial_point_quantile = 0.7
+    initial_point_quantile = 0.5
     safety_quantile = 0.2
 
     '''
@@ -197,7 +197,7 @@ if __name__ == '__main__':
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
     print('Hello')
-    with open('agents_8_50_108.pickle', 'wb') as handle:
+    with open('agents_4_50_120.pickle', 'wb') as handle:
         dill.dump(agents, handle)
 
 
@@ -206,6 +206,7 @@ if __name__ == '__main__':
 
     plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
     plot_2D_mean(cube_dict=agents[num_agents-1][-1], agent_number=num_agents-1)
+
 
     # Agents 1 and 2 3D explored domain
     for j in range(1, num_agents-1):  # not the first, not the last
@@ -216,8 +217,8 @@ if __name__ == '__main__':
         plot_1D_sampled_space(cube_dict=agents[j][-1], agent_number=j)
 
     # How much did we explore? Convex hull volume
-    hull = ConvexHull(X_sample_full.numpy())
-    print(f'We explored about {hull.volume*100}% of the domain.')
+    # hull = ConvexHull(X_sample_full.numpy())
+    # print(f'We explored about {hull.volume*100}% of the domain.')
 
 
 
