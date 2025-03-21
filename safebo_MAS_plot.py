@@ -29,6 +29,54 @@ def plot_2D_mean(cube_dict, agent_number, save=False):
         plt.savefig(f'mean_value_agent_{agent_number}.png')
         tikzplotlib.save(f'mean_value_agent_{agent_number}.tex')
 
+
+def plot_2D_UCB(cube_dict, agent_number, save=False):
+    t = cube_dict['iteration'].item()
+    n_dimensions = 2  # if agent_number==0 or agent_number==7 else 3  # only for 4 agents right now; fine
+    discr_domain = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))
+    plt.figure()
+    ucb = cube_dict['mean'].detach().numpy() + cube_dict['var'].detach().numpy()
+    sc = plt.scatter(
+        discr_domain[:, 0],
+        discr_domain[:, 1],
+        c=ucb,
+        cmap='plasma'
+    )
+    cbar = plt.colorbar(sc)  # , label="Mean Value")  # Add a colorbar to show the mapping
+    num_ticks = 5  # Set the number of ticks
+    tick_positions = np.linspace(ucb.min(), ucb.max(), num_ticks)
+    rounded_labels = np.round(tick_positions, 2)  # Round to 2 decimal places
+
+    cbar.set_ticks(tick_positions)
+    cbar.set_ticklabels(rounded_labels)  # Apply rounded labels
+    # plt.title(f'Iteration {t}; Agent {agent_number} mean')
+    plt.scatter(cube_dict['x_sample'][:, 0], cube_dict['x_sample'][:, 1], color='k')
+    plt.scatter(cube_dict['x_sample'][0, 0], cube_dict['x_sample'][0, 1], color='white')
+    # plt.xlabel('$a_1$')
+    # plt.ylabel('$a_2$')
+    plt.xticks([])
+    plt.yticks([])
+    plt.xlabel('')
+    plt.ylabel('')
+    plt.title('')
+    plt.gca().set_frame_on(False)
+    plt.axis('off')
+
+    plt.xlim(torch.tensor(-0.03), torch.tensor(1.03))
+    plt.ylim(torch.tensor(-0.03), torch.tensor(1.03))
+
+    # plt.xlim([-0.1, 1.1])
+    # plt.ylim([-0.1, 1.1])
+
+    if not save:
+        plt.show()
+    else:
+        plt.savefig(f'UCB_agent_{agent_number}.png')
+        plt.savefig(f'UCB_agent{agent_number}.pdf', dpi=1000, bbox_inches='tight', pad_inches=0)
+
+
+
+
 def plot_2D_samples(cube_dict, agent_number, save=False):
     t = cube_dict['iteration'].item()
     x_sample = cube_dict['x_sample']
@@ -43,14 +91,14 @@ def plot_2D_samples(cube_dict, agent_number, save=False):
     )
     plt.colorbar(sc, label="Sample")  # Add a colorbar to show the mapping
     plt.title(f'Iteration {t}; Agent {agent_number} samples')
-    # plt.scatter(cube_dict['x_sample'][:, 0], cube_dict['x_sample'][:, 1], label="Sampled Points", color='k')
+    plt.scatter(cube_dict['x_sample'][:, 0], cube_dict['x_sample'][:, 1], label="Sampled Points", color='k')
     plt.xlabel('$a_1$')
     plt.ylabel('$a_2$')
+
     if not save:
         plt.show()
     else:
         plt.savefig(f'samples_2D_agent{agent_number}.png')
-        tikzplotlib.save(f'samples_2D_agent{agent_number}.tex')
 
 
 
@@ -116,6 +164,9 @@ if __name__ == '__main__':
 
     plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
     plot_2D_mean(cube_dict=agents[7][-1], agent_number=7)
+
+    plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)
+    plot_2D_UCB(cube_dict=agents[7][-1], agent_number=7)
 
     plot_2D_samples(cube_dict=agents[0][-1], agent_number=0)
     plot_2D_samples(cube_dict=agents[7][-1], agent_number=7)
