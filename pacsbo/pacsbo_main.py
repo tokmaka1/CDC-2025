@@ -19,7 +19,6 @@ from matplotlib.patches import Ellipse
 import torch.multiprocessing as mp
 from scipy.special import comb
 # from plot import plot_1D, plot_2D_contour, plot_1D_SafeOpt_with_sets, plot_gym, plot_gym_together
-import gym
 import sys
 import os
 from custom_kernels import Matern12_RBF_WeightedSumKernel
@@ -240,10 +239,10 @@ class PACSBO():
         self.mean = self.f_preds.mean
         # print(max(abs(self.mean)))
         # warnings.warn('Different way of variance prediction')
-        self.var = self.f_preds.lazy_covariance_matrix.evaluate_kernel().diag()
+        # self.var = self.f_preds.lazy_covariance_matrix.evaluate_kernel().diag()
         # self.var = self.f_preds.lazy_covariance_matrix.diag()
         # self.var = self.f_preds.variance
-        # self.var = self.f_preds.covariance_matrix.diagonal()
+        self.var = self.f_preds.covariance_matrix.diag()
 
     def compute_confidence_intervals_training(self, dict_local_RKHS_norms={}):
         if self.tuple in dict_local_RKHS_norms:
@@ -370,12 +369,10 @@ class PACSBO():
         return self.gt.local_RKHS_norm(lb=self.lb, ub=self.ub, X_plot_local=self.discr_domain) if self.tuple != (-1,-1) else self.gt.RKHS_norm
 
     def compute_kernel_distance(self, x, x_prime):  # let us try whether it works without reshaped!
-        '''
-        k(x,x)+k(x^\prime,x^\prime)-k(x,x^\prime)-k(x^\prime,x)=2-2k(x,x^\prime)
-        This holds for all radial kernels with output variance 1, i.e., k(x,x)\equiv 1.
-        Both of which are true for our case.
-        We have this setting and we exploit it.
-        '''
+        # k(x,x)+k(x^\prime,x^\prime)-k(x,x^\prime)-k(x^\prime,x)=2-2k(x,x^\prime)
+        # This holds for all radial kernels with output variance 1, i.e., k(x,x)\equiv 1.
+        # Both of which are true for our case.
+        # We have this setting and we exploit it.
         # print('Before kernel operation')
         if self.model.kernel.__class__.__name__ != 'MaternKernel' and self.model.kernel.__class__.__name__ != 'RBFKernel':
             raise Exception("Current implementation only works with radial kernels.")

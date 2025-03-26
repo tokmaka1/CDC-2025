@@ -35,14 +35,14 @@ def plot_2D_UCB(cube_dict, agent_number, save=False):
     n_dimensions = 2  # if agent_number==0 or agent_number==7 else 3  # only for 4 agents right now; fine
     discr_domain = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))
     plt.figure()
-    ucb = cube_dict['mean'].detach().numpy() + cube_dict['var'].detach().numpy()
+    ucb = cube_dict['mean'].detach().numpy() + cube_dict['var'].detach().numpy()*cube_dict['beta'].detach().numpy()
     sc = plt.scatter(
         discr_domain[:, 0],
         discr_domain[:, 1],
         c=ucb,
         cmap='plasma'
     )
-    cbar = plt.colorbar(sc)  # , label="Mean Value")  # Add a colorbar to show the mapping
+    cbar = plt.colorbar(sc)  # , label="Mean Value"  # Add a colorbar to show the mapping
     num_ticks = 5  # Set the number of ticks
     tick_positions = np.linspace(ucb.min(), ucb.max(), num_ticks)
     rounded_labels = np.round(tick_positions, 2)  # Round to 2 decimal places
@@ -139,8 +139,11 @@ def plot_3D_sampled_space(cube_dict, agent_number, save=False):
         # tikzplotlib.save(f'3D_sampled_space_agent_{agent_number}.tex')
 
 
-def plot_1D_sampled_space(cube_dict, agent_number, save=False):
-    index = 1 if agent_number != 0 else 0
+def plot_1D_sampled_space(cube_dict, agent_number, communication=True, save=False):
+    if communication:
+        index = 1 if agent_number != 0 else 0
+    else:
+        index = 0
     X_sample = cube_dict['x_sample'][:, index]
     plt.figure()
     plt.plot()
@@ -153,23 +156,25 @@ def plot_1D_sampled_space(cube_dict, agent_number, save=False):
         plt.show()
     else:
         plt.savefig(f'1D_sampled_space_agent_{agent_number}.png')
-        # tikzplotlib.save(f'1D_sampled_space_agent_{agent_number}.tex')
+        tikzplotlib.save(f'1D_sampled_space_agent_{agent_number}.tex')
+    
 
 
 
 if __name__ == '__main__':
-    with open('agents_4_50_120.pickle', 'rb') as handle:
+    with open('agents_8_50_107_full_communication.pickle', 'rb') as handle:
         agents = dill.load(handle)
-    plot_reward(cube=agents[0][-1])
-
-    plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
-    plot_2D_mean(cube_dict=agents[7][-1], agent_number=7)
-
     plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)
     plot_2D_UCB(cube_dict=agents[7][-1], agent_number=7)
 
+    plot_reward(cube=agents[0][-1])
+
+    plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
+    plot_2D_mean(cube_dict=agents[7][-1], agent_number=3)
+
+
     plot_2D_samples(cube_dict=agents[0][-1], agent_number=0)
-    plot_2D_samples(cube_dict=agents[7][-1], agent_number=7)
+    plot_2D_samples(cube_dict=agents[7][-1], agent_number=3)
 
 
     # Agents 1 and 2 3D explored domain

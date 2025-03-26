@@ -15,9 +15,9 @@ import torch.multiprocessing as mp
 from torch.multiprocessing import Pool
 import dill
 
-random_seed_number = 120  # problem with 42 in 8D setting?
+random_seed_number = 107
 
-np.random.seed(random_seed_number)  # Problem with 42?
+np.random.seed(random_seed_number)
 
 # Fix seed for PyTorch (CPU)
 torch.manual_seed(random_seed_number)
@@ -31,7 +31,7 @@ os.chdir(script_dir)
 print("Changed working directory to:", os.getcwd())
 
 
-from safebo_MAS_plot import plot_2D_mean, plot_reward, plot_3D_sampled_space, plot_1D_sampled_space
+from safebo_MAS_plot import plot_2D_mean, plot_reward, plot_3D_sampled_space, plot_1D_sampled_space, plot_2D_UCB
 from pacsbo.pacsbo_main import compute_X_plot, ground_truth, initial_safe_samples, PACSBO, GPRegressionModel
 
 
@@ -78,10 +78,8 @@ def acquisition_function(noise_std, delta_confidence, exploration_threshold, B, 
     return x_new, cube
 
 
-def process_agent(j, agents_j, X_sample_full, Y_sample, t, hyperparameters):
+def process_agent(j, X_plot, communication_indices_list, X_sample_full, Y_sample, t, hyperparameters):
     noise_std, delta_confidence, exploration_threshold, RKHS_norm, lengthscale_agent_spatio, a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, output_variance_Ma12, safety_threshold = hyperparameters
-    X_plot = agents_j[0]
-    communication_indices_list = agents_j[1]
     X_sample = X_sample_full[:, communication_indices_list]
 
     x_new_neighbors, cube = acquisition_function(
@@ -98,10 +96,16 @@ def process_agent(j, agents_j, X_sample_full, Y_sample, t, hyperparameters):
     cube_dict['var'] = cube.var  # maybe also not necessary, let's see
     cube_dict['y_sample'] = cube.y_sample
     cube_dict['safety_threshold'] = safety_threshold
-    x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)
+    cube_dict['beta'] = cube.beta
+    if communication:
+        if full_communication:
+            x_new = x_new_neighbors
+        else:
+            x_new = x_new_neighbors[1].unsqueeze(0) if j != 0 else x_new_neighbors[0].unsqueeze(0)  # I think this is fine for any communication
+
+    else: 
+        x_new = x_new_neighbors[0].unsqueeze(0)
     agents_j = [
-        X_plot,
-        communication_indices_list,
         x_new.detach(),  # Detach tensor
         x_new_neighbors.detach(),  # Detach tensor
         cube_dict
@@ -115,14 +119,19 @@ if __name__ == '__main__':
     iterations = 50
     num_agents = 8
     random_expert = False
-    sequential_expert = True
+    sequential_expert = False
     agents = {}
+    communication_list_dict = {}
+    X_plot_dict = {}
     noise_std = 1e-2  # increase a little for numerical stability
     delta_confidence = 0.9
     exploration_threshold = 0.1
     dimension = num_agents
     initial_point_quantile = 0.5
     safety_quantile = 0.2
+    communication = True
+    full_communication = True
+    time_latent_variable = False
 
     '''
     Hyperparameters
@@ -156,17 +165,28 @@ if __name__ == '__main__':
             break
 
     for j in range(num_agents):  # set-up agents
-        n_dimensions = 2 if j==0 or j==num_agents-1 else 3
+        if communication:
+            if full_communication:
+                n_dimensions = num_agents
+                communication_indices_list = [kk for kk in range(num_agents)]
+            else:
+                n_dimensions = 2 if j==0 or j==num_agents-1 else 3
+                communication_indices_list = [j, j + 1] if j == 0 else [j - 1, j, j + 1] if 0 < j < num_agents - 1 else [num_agents - 2, num_agents - 1]
+        else:
+            n_dimensions = 1
+            communication_indices_list = [j]
+        communication_list_dict[j] = communication_indices_list
         # X_plot needs to be determined for every agent given their position in graph
         X_plot = compute_X_plot(n_dimensions=n_dimensions, points_per_axis=int(1e4**(1/n_dimensions)))  # more points?
         # which indices are relevant for this agent? for agent 0 it is 0 and 1, for agent 1 it is 0,1,2 etc; see graph
-        communication_indices_list = [j, j + 1] if j == 0 else [j - 1, j, j + 1] if 0 < j < num_agents - 1 else [num_agents - 2, num_agents - 1]
-        agents[j] = [X_plot, communication_indices_list, None, None, None]
-        # We can also just put our action always on index 1 but it makes most sense as is. Index 0 for j=0, index 1 for the rest.
+        X_plot_dict[j] = X_plot
 
     for t in tqdm(range(1, iterations)):
         for j in range(num_agents):  # this is parallelizable
-            j, agents_j = process_agent(j, agents[j], X_sample_full, Y_sample, t, hyperparameters)
+            if time_latent_variable:
+                j, agents_j = process_agent(j, X_plot_dict[j], communication_list_dict[j], X_sample_full, Y_sample, t, hyperparameters)
+            else:
+                j, agents_j = process_agent(j, X_plot_dict[j], communication_list_dict[j], X_sample_full, Y_sample, 0, hyperparameters)
             agents[j] = agents_j  # global dict.
         # with Pool(processes=num_agents) as pool:
         #     results = pool.starmap(process_agent, [(j, agents[j], X_sample_full, Y_sample, t, hyperparameters) for j in range(num_agents)])
@@ -180,32 +200,38 @@ if __name__ == '__main__':
                     expert_agent = (t - 1) % num_agents
                 elif random_expert:
                     expert_agent = np.random.choice(range(num_agents))  # who is the expert this round?
-                expert_x_new_neighbors = agents[expert_agent][3][:-1]  # exclude time. Wait time is never in?
-                expert_communication_list = agents[expert_agent][1]
+                expert_x_new_neighbors = agents[expert_agent][1][:-1]  # exclude time. Wait time is never in?
+                expert_communication_list = communication_list_dict[expert_agent]
                 x_new_full = torch.zeros(num_agents).unsqueeze(0)
                 x_new_full[:, expert_communication_list] = expert_x_new_neighbors
                 for jj in range(num_agents):
                     if jj not in expert_communication_list:
-                        x_new_full[:, jj] = agents[jj][2]  # get their x_new prediction
+                        x_new_full[:, jj] = agents[jj][0]  # get their x_new prediction
             else:
-                x_new_full = torch.cat([agents[j][2] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new ("1D ones")
-            # if torch.any(torch.all(X_sample_full == x_new_full, dim=1)):
-                # message = f'Same same same; {x_new_full}'
-                # warnings.warn(message)
+                if full_communication:
+                    x_new_full = agents[0][0][:-1].unsqueeze(0)  # we can take any agent; they are all the same because we model all and communicate everything
+                    # -1 because we leave time domain out!
+                else:
+                    x_new_full = torch.cat([agents[j][0] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new ("1D ones")
             print(f'We are sampling {x_new_full}')
             y_new = torch.tensor(gt.f(x_new_full), dtype=torch.float32)  # this is the applied action!
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
     print('Hello')
-    with open('agents_4_50_120.pickle', 'wb') as handle:
+    # Just save the cube!  # also save beta
+    with open('agents_8_50_107_full_communication.pickle', 'wb') as handle:
         dill.dump(agents, handle)
 
 
     # Development of reward
     plot_reward(cube=agents[0][-1])
 
+    plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)
+    plot_2D_UCB(cube_dict=agents[num_agents-1][-1], agent_number=num_agents-1)
+
     plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
     plot_2D_mean(cube_dict=agents[num_agents-1][-1], agent_number=num_agents-1)
+
 
 
     # Agents 1 and 2 3D explored domain

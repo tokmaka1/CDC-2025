@@ -2,7 +2,6 @@ import torch
 import gpytorch
 from gpytorch.kernels import Kernel
 import warnings
-from gpytorch.lazy import NonLazyTensor, LazyTensor, DiagLazyTensor, MulLazyTensor, LazyEvaluatedKernelTensor
 import numpy as np
 from linear_operator.operators import DenseLinearOperator
 
