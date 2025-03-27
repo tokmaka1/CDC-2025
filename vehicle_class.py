@@ -11,14 +11,14 @@ class P_controller:
         self.d_ref = d_ref
 
     def compute_error(self, my_position, forward_neighbor_position, backward_neighbor_position, errors_vehicle):
-        if backward_neighbor_position is None:
-            self.error = (forward_neighbor_position - my_position) - self.d_ref
-            self.error_sum = sum(errors_vehicle)
+        if backward_neighbor_position is not None:
+            self.error = (forward_neighbor_position - my_position) - (my_position - backward_neighbor_position)
+            # self.error_sum = sum(errors_vehicle)
         else:
-            self.error = (forward_neighbor_position - my_position) + (my_position - backward_neighbor_position) - 2*self.d_ref
+            self.error = (forward_neighbor_position - my_position) # -  forward error;
     def return_torque(self, my_position, forward_neighbor_position, backward_neighbor_position, errors_vehicle):
         self.compute_error(my_position, forward_neighbor_position, backward_neighbor_position, errors_vehicle)
-        self.torque = self.K_p*self.error + 100*self.error_sum
+        self.torque = self.K_p*self.error # + 100*self.error_sum
         return self.torque
     def return_error(self):
         return self.error
@@ -134,7 +134,7 @@ def simulate(hyperparameters, K_p_values):
                 if j != 0:
                     backward_neighbor_position = positions[i, j-1]
                     torque = list_controllers[j].return_torque(my_position=my_position, forward_neighbor_position=forward_neighbor_position,
-                     backward_neighbor_position=None, errors_vehicle=errors[:, j])
+                     backward_neighbor_position=backward_neighbor_position, errors_vehicle=errors[:, j])
                 if j == 0:
                     torque = list_controllers[j].return_torque(my_position=my_position, forward_neighbor_position=forward_neighbor_position,
                      backward_neighbor_position=None, errors_vehicle=errors[:, j])
@@ -157,7 +157,7 @@ def reward_function(errors, positions, d_ref, num_vehicles):
     collision_penalty = num_vehicles*(min_diff - d_ref)
     return - sum_errors - collision_penalty  # this is not properly scaled yet
 if __name__ == '__main__':
-    num_vehicles = 2
+    num_vehicles = 3
     v_leader = 10
     T = 50  # Total simulation time in seconds
     dt = 0.1
@@ -166,7 +166,7 @@ if __name__ == '__main__':
     d_ref = 10  # we want 10m between the LKWs
     time = np.linspace(0, T, steps)
     hyperparameters_simulation = [num_vehicles, v_leader, d_ref, steps, dt]
-    K_p_values = [500]*num_vehicles
+    K_p_values = [400]*num_vehicles
     positions, velocities, errors, torques  = simulate(hyperparameters_simulation, K_p_values)  # we will tune K_p values from our algoritm
     reward = reward_function(errors, positions, d_ref, num_vehicles)
     
