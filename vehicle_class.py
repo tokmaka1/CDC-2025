@@ -3,22 +3,27 @@ from matplotlib import pyplot as plt
 from IPython import embed as IPS
 import matplotlib.animation as animation
 import matplotlib.image as mpimg
+from tqdm import tqdm
 
 
 class P_controller:
-    def __init__(self, K_p, d_ref):
+    def __init__(self, K_p, K_i, d_ref, dt):
         self.K_p = K_p
+        self.K_i = K_i
         self.d_ref = d_ref
+        self.dt = dt
 
-    def compute_error(self, my_position, forward_neighbor_position, backward_neighbor_position, errors_vehicle):
-        if backward_neighbor_position is not None:
-            self.error = (forward_neighbor_position - my_position) - (my_position - backward_neighbor_position)
-            # self.error_sum = sum(errors_vehicle)
-        else:
-            self.error = (forward_neighbor_position - my_position) # -  forward error;
-    def return_torque(self, my_position, forward_neighbor_position, backward_neighbor_position, errors_vehicle):
-        self.compute_error(my_position, forward_neighbor_position, backward_neighbor_position, errors_vehicle)
-        self.torque = self.K_p*self.error # + 100*self.error_sum
+    def compute_error(self,  my_distance_to_front, fronts_distance_to_front, backs_distance_to_front ,errors_vehicle):
+        if backs_distance_to_front is not None:  # not the last vehicle
+            # Based on Laplace matrix
+            self.error = 2*my_distance_to_front - backs_distance_to_front  + fronts_distance_to_front  # *(1-int(fronts_distance_to_front==self.d_ref))
+            self.error_sum = sum(errors_vehicle)
+        else:  # last vehicle
+            self.error = my_distance_to_front  + fronts_distance_to_front
+            self.error_sum = sum(errors_vehicle)
+    def return_torque(self, my_distance_to_front, fronts_distance_to_front, backs_distance_to_front, errors_vehicle):
+        self.compute_error(my_distance_to_front, fronts_distance_to_front, backs_distance_to_front, errors_vehicle)
+        self.torque = self.K_p*self.error + self.K_i*self.error_sum*self.dt
         return self.torque
     def return_error(self):
         return self.error
@@ -58,7 +63,8 @@ class vehicle:
     def dynamics(self,u):
         # u = np.clip(u, -self.max_torque, self.max_torque)  # Limit torque within valid range; anyways input
         self.s = self.s + self.v*self.dt
-        self.v = min(self.v + ((self.Ft(u) + self.Fg() + self.Fr() + self.Fd())/self.m)*self.dt + np.random.normal(0,1e-4,1), self.max_speed)  # Limit velocity within limit 
+        # self.v = min(self.v + ((self.Ft(u) + self.Fg() + self.Fr() + self.Fd())/self.m)*self.dt + np.random.normal(0,1e-4,1), self.max_speed)  # Limit velocity within limit 
+        self.v = self.v + ((self.Ft(u) + self.Fg() + self.Fr() + self.Fd())/self.m)*self.dt
         self.x = np.vstack((self.s,self.v))
 
     # Gravitational Force
@@ -67,9 +73,9 @@ class vehicle:
 
     # Rolling Resistance
     def Fr(self):
-        if self.v > 0:
+        if self.v > 1e-2:
             return -self.cr*self.m*self.ga 
-        elif self.v < 0:
+        elif self.v < -1e-2:
             return self.cr*self.m*self.ga 
         else:
             return 0
@@ -92,24 +98,24 @@ class leading_vehicle(vehicle):
         self.x = np.vstack((self.s,self.v))
 
 
-def simulate(hyperparameters, K_p_values):
-    num_vehicles, v_leader, d_ref, steps, dt = hyperparameters
+def simulate(hyperparameters, K_p_values, K_i_values):
+    num_vehicles, v_leader, d_ref, steps, dt, s_init_list = hyperparameters
     list_vehicles = []
     list_controllers = []
     for i in range(num_vehicles):
-        r = np.random.uniform(0.1, 0.8) # Wheel radius (m)
+        r = np.random.uniform(0.4, 0.6)   # 0.5   # Wheel radius (m)
         ga = 9.81      # Gravitational acceleration (m/s²); all on same planet
-        alpha = 0.05   # Road grade (rad) ≈ 2.86°; all on same street
+        alpha = 0  # 0.05   # Road grade (rad) ≈ 2.86°; all on same street
         cr = np.random.uniform(0.004, 0.008)  # 0.006     # Rolling resistance coefficient
         rho = 1.225    # Air density (kg/m³); all in the same air
-        Ar = np.random.uniform(8, 12)  # 10        # Cross-sectional area (m²)
+        Ar = np.random.uniform(5, 7) # 10        # Cross-sectional area (m²)
         Cd = np.random.uniform(0.4, 0.8)  # 0.6       # Aerodynamic drag coefficient
-        m = np.random.uniform(8000, 16000)  # 15000      # Mass (kg) ~15 tons
+        m = np.random.uniform(1950, 2050)  # 2000      # Mass (kg) ~15 tons
         if i != num_vehicles - 1:  # not the leading vehicle with const. velocity dynamics
-            list_vehicles.append(vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=(10-i)*20))
-            list_controllers.append(P_controller(K_p=K_p_values[i], d_ref=d_ref))
+            list_vehicles.append(vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=s_init_list[i]))
+            list_controllers.append(P_controller(K_p=K_p_values[i], K_i=K_i_values[i], d_ref=d_ref, dt=dt))
         else:
-            list_vehicles.append(leading_vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=250, v=v_leader))
+            list_vehicles.append(leading_vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=s_init_list[i], v=v_leader))  # sinit 250
 
     # Simulation settings
      # Number of simulation steps
@@ -118,59 +124,70 @@ def simulate(hyperparameters, K_p_values):
 
     # Set up controller for each agent
     positions = np.zeros([steps, num_vehicles])
+    distances_to_front_vehicle = np.zeros([steps, num_vehicles])
+    distances_to_front_vehicle[:, -1] = d_ref  # first leading vehicle; but we count from left to right
     velocities = np.zeros([steps, num_vehicles])
-    errors = np.zeros([steps, num_vehicles-1])
+    total_error_list = [0]*steps
     torques = np.zeros([steps, num_vehicles-1])
+    abs_errors = np.zeros([steps, num_vehicles])
 
     torque = initial_torque
-    for i in range(steps):
-        for j in range(num_vehicles):
+    for i in tqdm(range(steps)):
+        for j in range(num_vehicles):  # update position and velocity for all vehicles.
             positions[i, j] = list_vehicles[j].s
             velocities[i, j] = list_vehicles[j].v
-        for j in range(num_vehicles):
+        for j in range(num_vehicles-1):  # now compute all distances!; we already know the last entry
+            distances_to_front_vehicle[i, j] = positions[i, j+1] - positions[i, j]
+        for j in range(num_vehicles):  # now compute inputs etc.
             if j != num_vehicles - 1:  # not the leading vehicle
-                my_position = positions[i, j] 
-                forward_neighbor_position = positions[i, j+1]
-                if j != 0:
-                    backward_neighbor_position = positions[i, j-1]
-                    torque = list_controllers[j].return_torque(my_position=my_position, forward_neighbor_position=forward_neighbor_position,
-                     backward_neighbor_position=backward_neighbor_position, errors_vehicle=errors[:, j])
+                my_distance_to_front = distances_to_front_vehicle[i, j]
+                fronts_distance_to_front = distances_to_front_vehicle[i, j+1]
+                if j != 0:  # not the first vehicle
+                    backs_distance_to_front = distances_to_front_vehicle[i, j-1]
+                    torque = list_controllers[j].return_torque(my_distance_to_front, fronts_distance_to_front,
+                     backs_distance_to_front, errors_vehicle=abs_errors[:, j])
                 if j == 0:
-                    torque = list_controllers[j].return_torque(my_position=my_position, forward_neighbor_position=forward_neighbor_position,
-                     backward_neighbor_position=None, errors_vehicle=errors[:, j])
+                    torque = list_controllers[j].return_torque(my_distance_to_front, fronts_distance_to_front,
+                     backs_distance_to_front=None, errors_vehicle=abs_errors[:, j])
                 list_vehicles[j].dynamics(torque)  # Apply torque
-                errors[i, j]=list_controllers[j].error
+                abs_errors[i, j]=abs(list_controllers[j].error)
+                total_error_list[i] += list_controllers[j].error
                 torques[i, j]=torque
             else:  # if leading vehicle
                 list_vehicles[j].dynamics()
-    return positions, velocities, errors, torques
+    return positions, velocities, total_error_list, torques, distances_to_front_vehicle, abs_errors
 
-def reward_function(errors, positions, d_ref, num_vehicles):
-    sum_errors = sum([sum(abs(errors[:, j])) for j in range(num_vehicles-1)])
-    sorted_positions = np.sort(positions, axis=1)
-    # Compute differences between consecutive sorted elements
-    diffs = np.diff(sorted_positions, axis=1)  # don't do this; we have a sorting and if ever i-1 gets in front of i, we have a collision.
-    # Take the minimum difference per row
-    min_diff = min(np.min(diffs, axis=1))
+def reward_function(distances_to_front_vehicle, d_ref, num_vehicles):
+    deviation = np.abs(distances_to_front_vehicle - d_ref)
+    abs_error = np.sum(deviation)
+    avg_error = 1/(num_vehicles-1)*1/steps*abs_error
+    min_distance = np.min(np.abs(distances_to_front_vehicle))
+    collision_penalty = (num_vehicles-1)*(min_distance-d_ref)
+    reward = - avg_error - T*collision_penalty
+    return reward
 
-
-    collision_penalty = num_vehicles*(min_diff - d_ref)
-    return - sum_errors - collision_penalty  # this is not properly scaled yet
 if __name__ == '__main__':
-    num_vehicles = 3
+    s_init_list = [0, 25, 38, 59, 100]
+    num_vehicles = 5
     v_leader = 10
-    T = 50  # Total simulation time in seconds
+    T = 500 # Total simulation time in seconds
     dt = 0.1
     steps = int(T / dt) 
     # Determine goal distance
-    d_ref = 10  # we want 10m between the LKWs
+    d_ref = 10 # we want 10m between the LKWs
     time = np.linspace(0, T, steps)
-    hyperparameters_simulation = [num_vehicles, v_leader, d_ref, steps, dt]
-    K_p_values = [400]*num_vehicles
-    positions, velocities, errors, torques  = simulate(hyperparameters_simulation, K_p_values)  # we will tune K_p values from our algoritm
-    reward = reward_function(errors, positions, d_ref, num_vehicles)
+    K_p_values = [0.5]*num_vehicles  # have this between 0 and 2!
+    K_i_values = [0.001]*num_vehicles
+    hyperparameters_simulation = [num_vehicles, v_leader, d_ref, steps, dt, s_init_list]
+    positions, velocities, total_error_list, torques, distances_to_front_vehicle, abs_errors  = simulate(hyperparameters_simulation, K_p_values, K_i_values)  # we will tune K_p values from our algoritm
+    deviation = np.abs(distances_to_front_vehicle - d_ref)
+    abs_error = np.sum(deviation)
+    avg_error = 1/(num_vehicles-1)*1/steps*abs_error
+    min_distance = np.min(np.abs(distances_to_front_vehicle))
+    safety_threshold = -d_ref*(num_vehicles-1)*T  # I guess quite non-smooth
+    reward = reward_function(distances_to_front_vehicle, d_ref, num_vehicles)
     
-    
+
     # Plot results
     plt.figure()
     for j in range(num_vehicles):
@@ -178,6 +195,23 @@ if __name__ == '__main__':
     plt.xlabel("Time (s)")
     plt.ylabel("Position (m)")
     plt.legend()
+    plt.grid()
+    plt.show()
+
+    plt.figure()
+    plt.plot(time, total_error_list)
+    plt.xlabel("Time (s)")
+    plt.ylabel("Error")
+    plt.grid()
+    plt.show()
+
+
+    plt.figure()
+    for j in range(num_vehicles):
+        plt.plot(time, distances_to_front_vehicle[:, j], label=f'{j}')
+    plt.xlabel("Time (s)")
+    plt.legend()
+    plt.ylabel("Distances")
     plt.grid()
     plt.show()
 
