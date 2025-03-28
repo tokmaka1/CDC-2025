@@ -5,6 +5,12 @@ import matplotlib.animation as animation
 import matplotlib.image as mpimg
 from tqdm import tqdm
 
+random_seed_number = 42
+
+np.random.seed(random_seed_number)
+
+
+
 
 class P_controller:
     def __init__(self, K_p, K_i, d_ref, dt):
@@ -98,24 +104,24 @@ class leading_vehicle(vehicle):
         self.x = np.vstack((self.s,self.v))
 
 
-def simulate(hyperparameters, K_p_values, K_i_values):
+def simulate(hyperparameters, K_p_values, K_i_values, list_vehicles):
+    K_p_values = [x * 10 for x in K_p_values]
     num_vehicles, v_leader, d_ref, steps, dt, s_init_list = hyperparameters
-    list_vehicles = []
     list_controllers = []
     for i in range(num_vehicles):
-        r = np.random.uniform(0.4, 0.6)   # 0.5   # Wheel radius (m)
-        ga = 9.81      # Gravitational acceleration (m/s²); all on same planet
-        alpha = 0  # 0.05   # Road grade (rad) ≈ 2.86°; all on same street
-        cr = np.random.uniform(0.004, 0.008)  # 0.006     # Rolling resistance coefficient
-        rho = 1.225    # Air density (kg/m³); all in the same air
-        Ar = np.random.uniform(5, 7) # 10        # Cross-sectional area (m²)
-        Cd = np.random.uniform(0.4, 0.8)  # 0.6       # Aerodynamic drag coefficient
-        m = np.random.uniform(1950, 2050)  # 2000      # Mass (kg) ~15 tons
+        # r = np.random.uniform(0.4, 0.6)   # 0.5   # Wheel radius (m)
+        # ga = 9.81      # Gravitational acceleration (m/s²); all on same planet
+        # alpha = 0  # 0.05   # Road grade (rad) ≈ 2.86°; all on same street
+        # cr = np.random.uniform(0.004, 0.008)  # 0.006     # Rolling resistance coefficient
+        # rho = 1.225    # Air density (kg/m³); all in the same air
+        # Ar = np.random.uniform(5, 7) # 10        # Cross-sectional area (m²)
+        # Cd = np.random.uniform(0.4, 0.8)  # 0.6       # Aerodynamic drag coefficient
+        # m = np.random.uniform(1950, 2050)  # 2000      # Mass (kg) ~15 tons
         if i != num_vehicles - 1:  # not the leading vehicle with const. velocity dynamics
-            list_vehicles.append(vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=s_init_list[i]))
+            # ist_vehicles.append(vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=s_init_list[i]))
             list_controllers.append(P_controller(K_p=K_p_values[i], K_i=K_i_values[i], d_ref=d_ref, dt=dt))
-        else:
-            list_vehicles.append(leading_vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=s_init_list[i], v=v_leader))  # sinit 250
+        # else:
+        #     list_vehicles.append(leading_vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=s_init_list[i], v=v_leader))  # sinit 250
 
     # Simulation settings
      # Number of simulation steps
@@ -132,7 +138,7 @@ def simulate(hyperparameters, K_p_values, K_i_values):
     abs_errors = np.zeros([steps, num_vehicles])
 
     torque = initial_torque
-    for i in tqdm(range(steps)):
+    for i in range(steps):
         for j in range(num_vehicles):  # update position and velocity for all vehicles.
             positions[i, j] = list_vehicles[j].s
             velocities[i, j] = list_vehicles[j].v
@@ -157,35 +163,48 @@ def simulate(hyperparameters, K_p_values, K_i_values):
                 list_vehicles[j].dynamics()
     return positions, velocities, total_error_list, torques, distances_to_front_vehicle, abs_errors
 
-def reward_function(distances_to_front_vehicle, d_ref, num_vehicles):
+def reward_function(distances_to_front_vehicle, d_ref, num_vehicles, T):
     deviation = np.abs(distances_to_front_vehicle - d_ref)
     abs_error = np.sum(deviation)
-    avg_error = 1/(num_vehicles-1)*1/steps*abs_error
-    min_distance = np.min(np.abs(distances_to_front_vehicle))
-    collision_penalty = (num_vehicles-1)*(min_distance-d_ref)
-    reward = - avg_error - T*collision_penalty
-    return reward
+    avg_error = 1/(num_vehicles-1)*1/T*abs_error
+    min_distance = np.min(distances_to_front_vehicle)
+    min_distance = max(min_distance, 0)  # clip it
+    max_distance = np.max(np.abs(distances_to_front_vehicle))
+    # reward = -(d_ref - min_distance)*(1-min_distance/max_distance) - (max_distance - d_ref)*min_distance/max_distance/10
+    reward = -avg_error/10000 * min_distance - (1-min_distance)*(d_ref - min_distance)
+    return reward/d_ref
+    # return -avg_error/10000
 
 if __name__ == '__main__':
-    s_init_list = [0, 25, 38, 59, 100]
+    s_init_list = [0, 300, 520, 700, 1000]
     num_vehicles = 5
-    v_leader = 10
-    T = 500 # Total simulation time in seconds
-    dt = 0.1
-    steps = int(T / dt) 
+    v_leader = 30
+    T = 120 # Total simulation time in seconds
+    dt_simulation = 0.1
+    steps = int(T / dt_simulation) 
     # Determine goal distance
-    d_ref = 10 # we want 10m between the LKWs
+    d_ref = 100 # we want 10m between the LKWs
     time = np.linspace(0, T, steps)
-    K_p_values = [0.5]*num_vehicles  # have this between 0 and 2!
-    K_i_values = [0.001]*num_vehicles
-    hyperparameters_simulation = [num_vehicles, v_leader, d_ref, steps, dt, s_init_list]
-    positions, velocities, total_error_list, torques, distances_to_front_vehicle, abs_errors  = simulate(hyperparameters_simulation, K_p_values, K_i_values)  # we will tune K_p values from our algoritm
-    deviation = np.abs(distances_to_front_vehicle - d_ref)
-    abs_error = np.sum(deviation)
-    avg_error = 1/(num_vehicles-1)*1/steps*abs_error
-    min_distance = np.min(np.abs(distances_to_front_vehicle))
-    safety_threshold = -d_ref*(num_vehicles-1)*T  # I guess quite non-smooth
-    reward = reward_function(distances_to_front_vehicle, d_ref, num_vehicles)
+    K_p_values = [0.3535, 0.5152, 0.3838, 0.7374]  # [0.5]*(num_vehicles-1)  # this is between 0 and 10, start with 5 for all
+    K_i_values = [0.001]*(num_vehicles-1)
+    hyperparameters_simulation = [num_vehicles, v_leader, d_ref, steps, dt_simulation, s_init_list]
+    list_vehicles = []
+    for ii in range(num_vehicles):
+        r = np.random.uniform(0.4, 0.6)   # 0.5   # Wheel radius (m)
+        ga = 9.81      # Gravitational acceleration (m/s²); all on same planet
+        alpha = 0  # 0.05   # Road grade (rad) ≈ 2.86°; all on same street
+        cr = np.random.uniform(0.004, 0.008)  # 0.006     # Rolling resistance coefficient
+        rho = 1.225    # Air density (kg/m³); all in the same air
+        Ar = np.random.uniform(5, 7) # 10        # Cross-sectional area (m²)
+        Cd = np.random.uniform(0.4, 0.8)  # 0.6       # Aerodynamic drag coefficient
+        m = np.random.uniform(1950, 2050)  # 2000      # Mass (kg) ~15 tons
+        if ii != num_vehicles - 1:
+            list_vehicles.append(vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt_simulation, s_init=s_init_list[ii]))
+        else:
+            list_vehicles.append(leading_vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt_simulation, s_init=s_init_list[ii], v=v_leader))  # sinit 250
+
+    positions, velocities, total_error_list, torques, distances_to_front_vehicle, abs_errors  = simulate(hyperparameters_simulation, K_p_values, K_i_values, list_vehicles)  # we will tune K_p values from our algoritm
+    reward = reward_function(distances_to_front_vehicle, d_ref, num_vehicles, T)
     
 
     # Plot results

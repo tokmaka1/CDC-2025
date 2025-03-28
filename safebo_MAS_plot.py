@@ -162,7 +162,7 @@ def plot_1D_sampled_space(cube_dict, agent_number, communication=True, save=Fals
 
 
 if __name__ == '__main__':
-    with open('agents_8_50_107_full_communication.pickle', 'rb') as handle:
+    with open('vehicles_first_test.pickle', 'rb') as handle:
         agents = dill.load(handle)
     plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)
     plot_2D_UCB(cube_dict=agents[7][-1], agent_number=7)

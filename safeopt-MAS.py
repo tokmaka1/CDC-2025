@@ -14,8 +14,9 @@ from scipy.spatial import ConvexHull
 import torch.multiprocessing as mp
 from torch.multiprocessing import Pool
 import dill
+from vehicle_class import simulate, reward_function, vehicle, leading_vehicle
 
-random_seed_number = 107
+random_seed_number = 42
 
 np.random.seed(random_seed_number)
 
@@ -117,9 +118,9 @@ if __name__ == '__main__':
     mp.set_start_method("spawn", force=True)  # Ensure safe multiprocessing with PyTorch
     # Generate ground truth
     iterations = 50
-    num_agents = 8
+    num_agents = 4
     random_expert = False
-    sequential_expert = False
+    sequential_expert = True
     agents = {}
     communication_list_dict = {}
     X_plot_dict = {}
@@ -127,43 +128,63 @@ if __name__ == '__main__':
     delta_confidence = 0.9
     exploration_threshold = 0.1
     dimension = num_agents
-    initial_point_quantile = 0.5
-    safety_quantile = 0.2
     communication = True
-    full_communication = True
-    time_latent_variable = False
+    full_communication = False
+    time_latent_variable = True
 
     '''
     Hyperparameters
     '''
-    RKHS_norm_spatio_temporal = 1  # 0.1
-    lengthscale_agent_spatio = 0.3  # 0.5
+    RKHS_norm_spatio_temporal = 5 # 0.1
+    lengthscale_agent_spatio = 0.2  # 0.3
     a_parameter = 50  # weighting factor for the brownian motion and reverse brownian motion kernel
     lengthscale_temporal_RBF = 20  # 20  # 5
     lengthscale_temporal_Ma12 = 5  # 5  # 1
     # Changing length scales did not directly influence stuff
-    output_variance_RBF = 0.1  # 0.1 0.5  # 0.5
-    output_variance_Ma12 = 0.1  # 0.1 2  # num_agents
-    # Changing the output variance does influence stuff a lot
+    output_variance_RBF = 1  # 0.5  # 0.5  # 0.1 0.5  # 0.5
+    output_variance_Ma12 = 1  # 0.5  # 0.5  # 0.1 2  # num_agents
 
-    lengthscale_gt = num_agents/10
-    gt = ground_truth(num_center_points=1000, dimension=dimension, RKHS_norm=1, lengthscale=lengthscale_gt)    
-    safety_threshold = torch.quantile(gt.fX, safety_quantile).item()  # -np.infty  # 
-    print(f'The heuristic maximum of the function is {max(gt.fX)} and located at {gt.X_center[torch.argmax(gt.fX)]}.')
+
+
+    # Set up the simulation
+    s_init_list = [0, 300, 520, 700, 1000]
+    num_vehicles = 5
+    v_leader = 30
+    T_simulation = 120 # Total simulation time in seconds
+    dt_simulation = 0.1
+    steps = int(T_simulation / dt_simulation) 
+    # Determine goal distance
+    d_ref = 100 # we want 100m between the LKWs
+    time = np.linspace(0, T_simulation, steps)
+    K_p_values = [0.4, 0.5, 0.4, 0.5]  # [0.5]*(num_vehicles-1)  # this is between 0 and 10, start with 5 for all
+    K_i_values = [0.001]*(num_vehicles-1)
+    hyperparameters_simulation = [num_vehicles, v_leader, d_ref, steps, dt_simulation, s_init_list]
+    safety_threshold = -1  # -1  # -d_ref*(num_vehicles-1)*T_simulation/10000  # I guess quite non-smooth
     print(f'The safety threshold is {safety_threshold}.')
 
     hyperparameters = [noise_std, delta_confidence, exploration_threshold, RKHS_norm_spatio_temporal, lengthscale_agent_spatio,
                     a_parameter, lengthscale_temporal_RBF, lengthscale_temporal_Ma12, output_variance_RBF, 
                     output_variance_Ma12, safety_threshold]
-    agents['gt'] = gt
-    # Finding initial safe sample
-    while True:
-        X_sample_full = torch.rand(dimension).unsqueeze(0)  # just start here
-        # X_sample_full = gt.X_center[torch.argmax(gt.fX)].unsqueeze(0)  # start with highest point
-        Y_sample = torch.tensor(gt.f(X_sample_full), dtype=torch.float32)
-        if Y_sample > torch.quantile(gt.fX, initial_point_quantile).item():  #  safety_threshold:
-            break
 
+    # Build cars
+    list_vehicles = []
+    for ii in range(num_vehicles):
+        r = np.random.uniform(0.4, 0.6)   # 0.5   # Wheel radius (m)
+        ga = 9.81      # Gravitational acceleration (m/s²); all on same planet
+        alpha = 0  # 0.05   # Road grade (rad) ≈ 2.86°; all on same street
+        cr = np.random.uniform(0.004, 0.008)  # 0.006     # Rolling resistance coefficient
+        rho = 1.225    # Air density (kg/m³); all in the same air
+        Ar = np.random.uniform(5, 7) # 10        # Cross-sectional area (m²)
+        Cd = np.random.uniform(0.4, 0.8)  # 0.6       # Aerodynamic drag coefficient
+        m = np.random.uniform(1950, 2050)  # 2000      # Mass (kg) ~15 tons
+        if ii != num_vehicles - 1:
+            list_vehicles.append(vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt_simulation, s_init=s_init_list[ii]))
+        else:
+            list_vehicles.append(leading_vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt_simulation, s_init=s_init_list[ii], v=v_leader))  # sinit 250
+    positions, velocities, total_error_list, torques, distances_to_front_vehicle, abs_errors  = simulate(hyperparameters_simulation, K_p_values, K_i_values, list_vehicles)  # we will tune K_p values from our algoritm
+    reward = reward_function(distances_to_front_vehicle, d_ref, num_vehicles, T_simulation)
+    X_sample_full = torch.tensor(K_p_values, dtype=torch.float32).unsqueeze(0)
+    Y_sample = torch.tensor(reward, dtype=torch.float32).unsqueeze(0)
     for j in range(num_agents):  # set-up agents
         if communication:
             if full_communication:
@@ -213,63 +234,23 @@ if __name__ == '__main__':
                     # -1 because we leave time domain out!
                 else:
                     x_new_full = torch.cat([agents[j][0] for j in range(num_agents)]).unsqueeze(0)  # concatenate all x_new ("1D ones")
-            print(f'We are sampling {x_new_full}')
-            y_new = torch.tensor(gt.f(x_new_full), dtype=torch.float32)  # this is the applied action!
+            K_p_values = x_new_full.tolist()[0]
+            positions, velocities, total_error_list, torques, distances_to_front_vehicle, abs_errors  = simulate(hyperparameters_simulation, K_p_values, K_i_values, list_vehicles)  # we will tune K_p values from our algoritm
+            reward = reward_function(distances_to_front_vehicle, d_ref, num_vehicles, T_simulation)
+            y_new = torch.tensor(reward, dtype=torch.float32).unsqueeze(0)
+            print(f'We sampled {x_new_full} with value {y_new}')
+            if y_new <= safety_threshold:
+                warnings.warn("We have a safety violation!")
             Y_sample = torch.cat((Y_sample, y_new), dim=0)
             X_sample_full = torch.cat((X_sample_full, x_new_full))  # , dim=0)  # cat all samples
+    agents['X_sample_full'] = X_sample_full
     print('Hello')
-    # Just save the cube!  # also save beta
-    with open('agents_8_50_107_full_communication.pickle', 'wb') as handle:
+    # This is just the very last time step... We should have some other plot. To see what we save; but first. reward and safety threhold need to be well-defined
+    # agents['positions'] = positions
+    # agents['velocities'] = velocities
+    # agents['total_error_list'] = total_error_list
+    # agents['distances_to_front_vehicle'] = distances_to_front_vehicle
+    # agents['abs_errors'] = abs_errors
+    with open('vehicles_first_test.pickle', 'wb') as handle:
         dill.dump(agents, handle)
-
-
-    # Development of reward
     plot_reward(cube=agents[0][-1])
-
-    plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)
-    plot_2D_UCB(cube_dict=agents[num_agents-1][-1], agent_number=num_agents-1)
-
-    plot_2D_mean(cube_dict=agents[0][-1], agent_number=0)
-    plot_2D_mean(cube_dict=agents[num_agents-1][-1], agent_number=num_agents-1)
-
-
-
-    # Agents 1 and 2 3D explored domain
-    for j in range(1, num_agents-1):  # not the first, not the last
-        plot_3D_sampled_space(cube_dict=agents[j][-1], agent_number=j)
-
-    # All agents 1D explored domain
-    for j in range(1, num_agents-1):
-        plot_1D_sampled_space(cube_dict=agents[j][-1], agent_number=j)
-
-    # How much did we explore? Convex hull volume
-    # hull = ConvexHull(X_sample_full.numpy())
-    # print(f'We explored about {hull.volume*100}% of the domain.')
-
-
-
-
-
-
-'''
-    for j in range(1, num_agents):  # not the first because we keep this constant
-        cube = agents[j][-1]
-        plt.figure()
-        plt.plot(np.asarray(X_sample_full[:, j]), np.asarray(Y_sample), 'ob', markersize=10)
-        # plt.plot(X_plot, gt.f(X_plot), '-b')
-        plt.fill_between(X_plot.flatten(), cube.lcb.detach().numpy(), cube.ucb.detach().numpy(), color='gray', alpha=0.25)
-        if safety_threshold != -np.infty:
-            plt.plot(X_plot.flatten(), torch.ones_like(X_plot.flatten())*safety_threshold, '-r')
-        plt.xlabel('Action')
-        plt.ylabel('Reward')
-        plt.title(f'Agent {j}')
-        # plt.savefig(f'../{num_agents}_agents_agent_{j}_safety.png')
-
-    # Now plot Agent 0 (the one with constant)
-    plt.figure()
-    plt.plot(range(iterations), Y_sample, '*-')
-    plt.title(f'Agent 0: Time series POV; {num_agents} total agents, safety threshold={round(safety_threshold,2)}')
-    plt.xlabel('Iteration')
-    plt.ylabel('Global reward')
-    # plt.savefig(f'../{num_agents}_agents_agent_0_safety.png')
-'''

@@ -2,7 +2,7 @@ import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-from custom_kernels import Matern12_RBF_WeightedSumKernel, MyPeriodicKernel, MyPolynomialKernel
+from custom_kernels import Matern12_RBF_WeightedSumKernel
 import gpytorch
 from pacsbo.pacsbo_main import compute_X_plot
 import random
@@ -28,16 +28,16 @@ def generating_kernel_paths(kernel, RKHS_norm, iterations_begin, iterations_end,
 
 
 if __name__ == '__main__':
-    kernel = Matern12_RBF_WeightedSumKernel(active_dims=None, lengthscale_temporal_RBF=10, lengthscale_temporal_Ma12=2, output_variance_RBF=0.5, output_variance_Ma12=2)
+    kernel = Matern12_RBF_WeightedSumKernel(active_dims=None, lengthscale_temporal_RBF=5, lengthscale_temporal_Ma12=1, output_variance_RBF=1, output_variance_Ma12=10, a_parameter=50)
     list_Y = []
     iterations_begin = 1
     iterations_end = 50
     num_X_plot = 1000  # not realistic because we evaluate on 50 integers
     X_plot = compute_X_plot(1, num_X_plot).flatten()
     X_plot = iterations_begin + X_plot*(iterations_end - iterations_begin)
-    for _ in range(20):
+    for _ in range(2):
         # Y_c = generating_kernel_paths(, RKHS_norm=1)
-        Y_c = generating_kernel_paths(kernel=kernel, RKHS_norm=5, iterations_begin=iterations_begin,
+        Y_c = generating_kernel_paths(kernel=kernel, RKHS_norm=1, iterations_begin=iterations_begin,
                                       iterations_end=iterations_end, num_X_center_min=400, num_X_center_max=800, X_plot=X_plot)
         list_Y.append(Y_c)
     plt.figure()
