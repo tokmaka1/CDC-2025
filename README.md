@@ -1,4 +1,5 @@
 To cite this code, please use
+
 @inproceedings{tokmak2025MAS,
   title={Toward safe control parameter tuning in distributed multi-agent systems},
   author={Tokmak, Abdullah and Sch{\"o}n, Thomas B and Baumann, Dominik},
