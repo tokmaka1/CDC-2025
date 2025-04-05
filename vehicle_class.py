@@ -4,6 +4,10 @@ from IPython import embed as IPS
 import matplotlib.animation as animation
 import matplotlib.image as mpimg
 from tqdm import tqdm
+import tikzplotlib
+import dill
+import torch
+from safebo_MAS_plot import plot_reward
 
 random_seed_number = 42
 
@@ -22,14 +26,16 @@ class P_controller:
     def compute_error(self,  my_distance_to_front, fronts_distance_to_front, backs_distance_to_front ,errors_vehicle):
         if backs_distance_to_front is not None:  # not the last vehicle
             # Based on Laplace matrix
-            self.error = 2*my_distance_to_front - backs_distance_to_front  + fronts_distance_to_front  # *(1-int(fronts_distance_to_front==self.d_ref))
+            self.error = 2*my_distance_to_front - backs_distance_to_front  + fronts_distance_to_front
+            # self.error =  backs_distance_to_front  - fronts_distance_to_front
             self.error_sum = sum(errors_vehicle)
         else:  # last vehicle
             self.error = my_distance_to_front  + fronts_distance_to_front
+            # self.error = - my_distance_to_front  + fronts_distance_to_front
             self.error_sum = sum(errors_vehicle)
     def return_torque(self, my_distance_to_front, fronts_distance_to_front, backs_distance_to_front, errors_vehicle):
         self.compute_error(my_distance_to_front, fronts_distance_to_front, backs_distance_to_front, errors_vehicle)
-        self.torque = self.K_p*self.error + self.K_i*self.error_sum*self.dt
+        self.torque = (self.K_p*self.error + self.K_i*self.error_sum*self.dt)
         return self.torque
     def return_error(self):
         return self.error
@@ -109,14 +115,6 @@ def simulate(hyperparameters, K_p_values, K_i_values, list_vehicles):
     num_vehicles, v_leader, d_ref, steps, dt, s_init_list = hyperparameters
     list_controllers = []
     for i in range(num_vehicles):
-        # r = np.random.uniform(0.4, 0.6)   # 0.5   # Wheel radius (m)
-        # ga = 9.81      # Gravitational acceleration (m/s²); all on same planet
-        # alpha = 0  # 0.05   # Road grade (rad) ≈ 2.86°; all on same street
-        # cr = np.random.uniform(0.004, 0.008)  # 0.006     # Rolling resistance coefficient
-        # rho = 1.225    # Air density (kg/m³); all in the same air
-        # Ar = np.random.uniform(5, 7) # 10        # Cross-sectional area (m²)
-        # Cd = np.random.uniform(0.4, 0.8)  # 0.6       # Aerodynamic drag coefficient
-        # m = np.random.uniform(1950, 2050)  # 2000      # Mass (kg) ~15 tons
         if i != num_vehicles - 1:  # not the leading vehicle with const. velocity dynamics
             # ist_vehicles.append(vehicle(r, ga, alpha, cr, rho, Ar, Cd, m, dt, s_init=s_init_list[i]))
             list_controllers.append(P_controller(K_p=K_p_values[i], K_i=K_i_values[i], d_ref=d_ref, dt=dt))
@@ -185,8 +183,11 @@ if __name__ == '__main__':
     # Determine goal distance
     d_ref = 100 # we want 10m between the LKWs
     time = np.linspace(0, T, steps)
-    K_p_values = [0.3535, 0.5152, 0.3838, 0.7374]  # [0.5]*(num_vehicles-1)  # this is between 0 and 10, start with 5 for all
-    K_i_values = [0.001]*(num_vehicles-1)
+    with open('vehicles.pickle', 'rb') as handle:
+        agents = dill.load(handle)
+    max_index = torch.argmax(agents[0][-1]['y_sample'])
+    K_p_values = agents['X_sample_full'][max_index]  # [0.4, 0.5, 0.4, 0.5]
+    K_i_values = [0]*(num_vehicles-1)  # [0.001]*(num_vehicles-1)
     hyperparameters_simulation = [num_vehicles, v_leader, d_ref, steps, dt_simulation, s_init_list]
     list_vehicles = []
     for ii in range(num_vehicles):
@@ -210,12 +211,14 @@ if __name__ == '__main__':
     # Plot results
     plt.figure()
     for j in range(num_vehicles):
-        plt.plot(time, positions[:, j], label=f"LKW {j}")
+        plt.plot(time, positions[:, j])
     plt.xlabel("Time (s)")
     plt.ylabel("Position (m)")
-    plt.legend()
     plt.grid()
-    plt.show()
+    tikzplotlib.save("positions.tex")
+    
+    plot_reward(cube=agents[0][-1])
+
 
     plt.figure()
     plt.plot(time, total_error_list)
@@ -250,12 +253,6 @@ if __name__ == '__main__':
     plt.legend()
     plt.ylabel("Torque")
 
-    plt.figure()
-    for j in range(num_vehicles-1):
-        plt.plot(time, errors[:, j], label=f'{j}')
-    plt.xlabel("Time")
-    plt.legend()
-    plt.ylabel("Error")
 
 
 
@@ -300,16 +297,3 @@ if __name__ == '__main__':
     # plt.legend()
     plt.show()
     print("Done")
-
-
-
-
-
-
-
-    # plt.legend()
-    # plt.show()
-
-
-
-    

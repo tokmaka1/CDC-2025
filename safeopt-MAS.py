@@ -157,7 +157,7 @@ if __name__ == '__main__':
     d_ref = 100 # we want 100m between the LKWs
     time = np.linspace(0, T_simulation, steps)
     K_p_values = [0.4, 0.5, 0.4, 0.5]  # [0.5]*(num_vehicles-1)  # this is between 0 and 10, start with 5 for all
-    K_i_values = [0.001]*(num_vehicles-1)
+    K_i_values = [0]*(num_vehicles-1)   
     hyperparameters_simulation = [num_vehicles, v_leader, d_ref, steps, dt_simulation, s_init_list]
     safety_threshold = -1  # -1  # -d_ref*(num_vehicles-1)*T_simulation/10000  # I guess quite non-smooth
     print(f'The safety threshold is {safety_threshold}.')
@@ -251,6 +251,6 @@ if __name__ == '__main__':
     # agents['total_error_list'] = total_error_list
     # agents['distances_to_front_vehicle'] = distances_to_front_vehicle
     # agents['abs_errors'] = abs_errors
-    with open('vehicles_first_test.pickle', 'wb') as handle:
+    with open('vehicles.pickle', 'wb') as handle:
         dill.dump(agents, handle)
     plot_reward(cube=agents[0][-1])

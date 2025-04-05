@@ -71,7 +71,7 @@ def plot_2D_UCB(cube_dict, agent_number, save=False):
     if not save:
         plt.show()
     else:
-        plt.savefig(f'UCB_agent_{agent_number}.png')
+        plt.savefig(f'UCB_agent_{agent_number}.png', bbox_inches='tight', pad_inches=0)
         plt.savefig(f'UCB_agent{agent_number}.pdf', dpi=1000, bbox_inches='tight', pad_inches=0)
 
 
@@ -162,10 +162,10 @@ def plot_1D_sampled_space(cube_dict, agent_number, communication=True, save=Fals
 
 
 if __name__ == '__main__':
-    with open('vehicles_first_test.pickle', 'rb') as handle:
+    with open('agents_4_50_120.pickle', 'rb') as handle:
         agents = dill.load(handle)
     plot_2D_UCB(cube_dict=agents[0][-1], agent_number=0)
-    plot_2D_UCB(cube_dict=agents[7][-1], agent_number=7)
+    plot_2D_UCB(cube_dict=agents[3][-1], agent_number=3)
 
     plot_reward(cube=agents[0][-1])
 

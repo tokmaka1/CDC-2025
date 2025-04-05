@@ -65,7 +65,7 @@ if __name__ == '__main__':
     # plt.xlabel('')
     # plt.ylabel('')
     # plt.title('')
-    K = kernel.bm_kernel(X_plot, X_plot).to_dense()
+    K = kernel.bm_rbm_product(X_plot, X_plot).to_dense()
     I = torch.eye(len(K))*1e-4
 
     L = torch.linalg.cholesky(K+I)  # heuristic check for positive definiteness
@@ -81,7 +81,7 @@ if __name__ == '__main__':
     plt.xlabel('')
     plt.ylabel('')
     plt.title('')
-    plt.savefig('bm_kernel_frac_50.pdf', dpi=1000, bbox_inches='tight', pad_inches=0)
+    plt.savefig('bm_kernel_frac_50.png', bbox_inches='tight', pad_inches=0)
 
 
 
