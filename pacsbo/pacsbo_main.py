@@ -368,17 +368,30 @@ class PACSBO():
     def compute_RKHS_norm_true(self):
         return self.gt.local_RKHS_norm(lb=self.lb, ub=self.ub, X_plot_local=self.discr_domain) if self.tuple != (-1,-1) else self.gt.RKHS_norm
 
-    def compute_kernel_distance(self, x, x_prime):  # let us try whether it works without reshaped!
-        # k(x,x)+k(x^\prime,x^\prime)-k(x,x^\prime)-k(x^\prime,x)=2-2k(x,x^\prime)
-        # This holds for all radial kernels with output variance 1, i.e., k(x,x)\equiv 1.
-        # Both of which are true for our case.
-        # We have this setting and we exploit it.
-        # print('Before kernel operation')
-        if self.model.kernel.__class__.__name__ != 'MaternKernel' and self.model.kernel.__class__.__name__ != 'RBFKernel':
-            raise Exception("Current implementation only works with radial kernels.")
-        matrix_containing_kernel_values = self.model.kernel(x, x_prime).evaluate()  # here we can have problems with the size of the matrix
-        # print('After kernel operation')
-        return torch.sqrt(2-2*matrix_containing_kernel_values)
+    def compute_kernel_distance(self, x, x_prime):
+        # print("Now computing potential expanders matrix; this may take some time")
+        # complete_matrix = torch.zeros([len(x), len(x_prime)])
+        # for i in tqdm(range(len(x))):
+        #     for j in range(len(x_prime)):
+        #         complete_matrix[i, j] = torch.sqrt(self.model.kernel(x[i].unsqueeze(0), x[i].unsqueeze(0)).evaluate()
+        #                                            + self.model.kernel(x_prime[j].unsqueeze(0), x_prime[j].unsqueeze(0)).evaluate()
+        #                                            - self.model.kernel(x[i].unsqueeze(0), x_prime[j].unsqueeze(0)).evaluate()
+        #                                            - self.model.kernel(x_prime[j].unsqueeze(0), x[i].unsqueeze(0)).evaluate()
+        #                                            )
+        K_xx_diag = self.model.kernel(x, x).evaluate().diagonal()           # [N]
+        K_xp_xp_diag = self.model.kernel(x_prime, x_prime).evaluate().diagonal()  # [M]
+
+        # Pairwise kernel matrix between x and x'
+        K_x_xp = self.model.kernel(x, x_prime).evaluate()                   # [N, M]
+
+        # Compute full matrix using broadcasting
+        complete_matrix = torch.sqrt(
+            K_xx_diag[:, None] +                # [N, 1]
+            K_xp_xp_diag[None, :] -            # [1, M]
+            2 * K_x_xp                         # [N, M]
+        )
+
+        return complete_matrix
 
     def save_data_for_RNN_training(self, dict_mean_RKHS_norms, dict_recip_variances, x_last_iteration):  # We can also just do it for the cube from which we sample, and of course global. But let's see.
         if convert_to_hashable(self.tuple) not in dict_mean_RKHS_norms.keys():  # RKHS norm only defined by the samples. We always start at the beginning.
